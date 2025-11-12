@@ -13,17 +13,19 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  TouchableWithoutFeedback,
   View,
 } from "react-native";
 
 // import { Linking, Alert } from 'react-native'; // Import Linking and Alert for notifications and settings
-
+import { TapGestureHandler, GestureHandlerRootView } from 'react-native-gesture-handler';
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import { launchImageLibrary } from "react-native-image-picker";
 import { check, PERMISSIONS, request, RESULTS } from "react-native-permissions";
 import Icon from "react-native-vector-icons/FontAwesome";
 import FontAwesome5 from "react-native-vector-icons/FontAwesome5";
+import MaterialCommunityIcons from "react-native-vector-icons/MaterialCommunityIcons";
 
 import PhotoEditor from "@baronha/react-native-photo-editor";
 import { CameraRoll } from "@react-native-camera-roll/camera-roll";
@@ -1176,9 +1178,7 @@ export const CameraScreen = ({ route, navigation }) => {
   // Camera device and reference
   const device = useCameraDevice("back");
   const camera = useRef(null);
-  const takePhotoOptions = {
-    flash: "off",
-  };
+  const [flash, setFlash] = useState('off'); // off, on, auto
 
   // Error handling callback
   const onError = useCallback((error) => {
@@ -1194,7 +1194,9 @@ export const CameraScreen = ({ route, navigation }) => {
       }
 
       // Capture photo using the camera
-      const photo = await camera.current.takePhoto(takePhotoOptions);
+      const photo = await camera.current.takePhoto({
+        flash: flash,
+      });
 
       // Save photo to the Camera Roll and get the URI
       const imgUri = await CameraRoll.save(`file://${photo.path}`, {
@@ -1205,7 +1207,9 @@ export const CameraScreen = ({ route, navigation }) => {
       let filepath;
       if (Platform.OS === "ios") {
         const fileData = await CameraRoll.iosGetImageDataById(imgUri);
-        filepath = fileData.uri;
+        console.log("iOS fileData:", fileData);
+        if (!fileData?.node?.image?.filepath) return undefined;
+        filepath = fileData.node.image.filepath;
       } else {
         filepath = imgUri;
       }
@@ -1214,6 +1218,10 @@ export const CameraScreen = ({ route, navigation }) => {
       const photoData = await RNFS.readFile(filepath, "base64");
       const fileName = `${new Date().getTime()}.jpg`;
       const imgPath = `${RNFS.DocumentDirectoryPath}/${fileName}`;
+      // const appDir = `${RNFS.DocumentDirectoryPath}/SolarVest_Project`;
+      // await RNFS.mkdir(appDir);
+      // const imgPath = `${appDir}/${fileName}`;
+      console.log("imgPath before save:", imgPath);
 
       // Write the photo data to the app's documents directory
       await RNFS.writeFile(imgPath, photoData, "base64");
@@ -1262,6 +1270,21 @@ export const CameraScreen = ({ route, navigation }) => {
     }
   };
 
+  const handleFocusTap = async (event) => {
+    const { x, y } = event.nativeEvent;
+    console.log("native event x y %d %d", x, y)
+    // camera.current?.focus({ x, y }); // Only works in v3.x
+    try {
+      await camera.current.focus({ x: x, y: y });
+      console.log('Focus call sent');
+    } catch (e) {
+      console.warn('Focus failed:', e);
+    }
+  };
+
+  const screenRatio = height / width;
+  const cameraRatio = 16 / 9; // You can adjust this depending on your needs
+
   if (device != null) {
     const format = useCameraFormat(device, [
       { photoAspectRatio: 4 / 3 },
@@ -1269,71 +1292,115 @@ export const CameraScreen = ({ route, navigation }) => {
       { photoHdr: true },
     ]);
     return (
-      <View style={styles.cameraContainer}>
-        <Camera
-          ref={camera}
-          onError={onError}
-          format={format}
-          outputOrientation="portrait"
-          style={StyleSheet.absoluteFill}
-          device={device}
-          isActive={true}
-          photo={true}
-          ratio="16:9"
-          photoQualityBalance="quality"
+      <GestureHandlerRootView style={{ flex: 1 }}>
 
-          // style={StyleSheet.absoluteFill}
-          // device={device}
-          // isActive={true}
+        <View style={styles.cameraContainer}>
+          <TapGestureHandler onHandlerStateChange={handleFocusTap}>
+            <View style={StyleSheet.absoluteFill}>
 
-          // resizeMode={'contain'}
-        />
-        <View
-          style={{
-            position: "absolute",
-            bottom: height * 0.4,
-            alignself: "center",
-          }}
-        >
-          <TouchableOpacity style={styles.cameraButton} onPress={takePhoto}>
-            <FontAwesome5 name="camera" size={35} color="black" />
-          </TouchableOpacity>
-        </View>
-        <View
-          style={{
-            position: "absolute",
-            bottom: 0,
-            width: "100%",
-            height: height * 0.2,
-          }}
-        >
-          <Carousel
-            loop
-            width={width}
-            height={height * 0.2}
-            sliderWidth={width}
-            itemWidth={width * 0.3}
-            data={imageSections.filter((item) => item.picture !== "")}
-            inactiveSlideScale={1}
-            scrollAnimationDuration={1000}
-            onSnapToItem={(index) => console.log("current index:", index)}
-            renderItem={({ item }) => (
-              console.log(item),
-              (
-                <View
-                  style={{ flex: 1, borderWidth: 1, justifyContent: "center" }}
-                >
-                  <Image
-                    source={{ uri: item.picture }}
-                    style={{ flex: 1 }}
-                    resizeMode="contain"
-                  />
-                </View>
-              )
-            )}
-          />
-        </View>
-        {/* <View style={{ position: 'absolute', bottom: 0, width: '100%', height: height * 0.2 }}>
+              <Camera
+                ref={camera}
+                onError={onError}
+                // format={format}
+                // outputOrientation="portrait"
+                //  orientation='portrait-upside-down'
+                // style={StyleSheet.absoluteFill}
+                style={[
+                  styles.camera,
+                  {
+                    height: screenRatio > cameraRatio ? height : width * cameraRatio, // Adjust height based on aspect ratio
+                    width: screenRatio > cameraRatio ? height / cameraRatio : width, // Adjust width based on aspect ratio
+                  },
+                ]}
+                device={device}
+                isActive={true}
+                photo={true}
+                ratio="16:9"
+                photoQualityBalance="quality"
+                // resizeMode={'contain'}
+                torch={flash === 'on' ? 'on' : 'off'}
+                focusable={true}
+                // onInitialized={async () => {
+                //   console.log('Camera ready');
+                //   try {
+                //     await camera.current.focus({ x: 0.5, y: 0.5 });
+                //     console.log('Focus call sent');
+                //   } catch (e) {
+                //     console.warn('Focus failed:', e);
+                //   }
+                // }}
+              />
+            </View>
+
+          </TapGestureHandler>
+
+          <View
+            style={{
+              position: "absolute",
+              top: 0,
+              marginTop: 4,
+              alignself: "center",
+            }}
+          >
+            <TouchableOpacity
+              style={styles.flashButton}
+              onPress={() => setFlash(flash === 'off' ? 'on' : 'off')}>
+              <MaterialCommunityIcons
+                name={flash === 'off' ? 'flash-off' : 'flash'}
+                size={24}
+                color={flash === 'off' ? 'gray' : 'gold'}
+                solid
+              />
+            </TouchableOpacity>
+          </View>
+
+          <View
+            style={{
+              position: "absolute",
+              bottom: height * 0.4,
+              alignself: "center",
+            }}
+          >
+            <TouchableOpacity style={styles.cameraButton} onPress={takePhoto}>
+              <FontAwesome5 name="camera" size={35} color="black" />
+            </TouchableOpacity>
+          </View>
+
+          <View
+            style={{
+              position: "absolute",
+              bottom: 0,
+              width: "100%",
+              height: height * 0.2,
+            }}
+          >
+            <Carousel
+              loop
+              width={width}
+              height={height * 0.2}
+              sliderWidth={width}
+              itemWidth={width * 0.3}
+              data={imageSections.filter((item) => item.picture !== "")}
+              inactiveSlideScale={1}
+              scrollAnimationDuration={1000}
+              onSnapToItem={(index) => console.log("current index:", index)}
+              renderItem={({ item }) => (
+                console.log(item),
+                (
+                  <View
+                    style={{ flex: 1, borderWidth: 1, justifyContent: "center" }}
+                  >
+                    <Image
+                      source={{ uri: item.picture }}
+                      style={{ flex: 1 }}
+                      resizeMode="contain"
+                    />
+                  </View>
+                )
+              )}
+            />
+          </View>
+          {/* <View style={{ position: 'absolute', bottom: 0, width: '100%', height: height * 0.2 }}>
                     <Carousel
                         loop
                         width={width}
@@ -1353,7 +1420,8 @@ export const CameraScreen = ({ route, navigation }) => {
                         )}
                     />
                 </View> */}
-      </View>
+        </View>
+      </GestureHandlerRootView>
     );
   }
 };
@@ -1417,6 +1485,16 @@ const styles = StyleSheet.create({
     width: 55,
     height: 55,
     borderRadius: 30,
+    borderWidth: 2,
+    borderColor: "#8829A0",
+    backgroundColor: "white",
+  },
+  flashButton: {
+    alignItems: "center",
+    justifyContent: "center",
+    width: 50,
+    height: 50,
+    borderRadius: 25,
     borderWidth: 2,
     borderColor: "#8829A0",
     backgroundColor: "white",

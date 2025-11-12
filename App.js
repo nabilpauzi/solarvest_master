@@ -15,7 +15,7 @@ import React, {
   createContext,
 } from "react";
 /*import * as Progress from 'react-native-progress';*/
-import { ActivityIndicator, Linking, Platform } from "react-native";
+import { ActivityIndicator, Keyboard, KeyboardAvoidingView, Linking, Platform, TouchableWithoutFeedback } from "react-native";
 import {
   SafeAreaView,
   ScrollView,
@@ -54,9 +54,12 @@ import { ListItem } from "@rneui/themed";
 import CheckBox from "@react-native-community/checkbox";
 import axios from "axios";
 import Pinchable from "react-native-pinchable";
-import { btoa, atob, toByteArray } from "react-native-quick-base64";
+import { btoa, atob, toByteArray} from "react-native-quick-base64";
 import { Settings } from "./src/components/Settings.js";
 import { retrieveAccessToken } from "./src/utils/sharePointUtils.js";
+
+import { Buffer } from 'buffer';
+global.Buffer = Buffer;
 
 import TestScreen from "./src/components/test";
 
@@ -757,6 +760,7 @@ const PptModal = ({ projectData, project }) => {
   const [selectedHeaders, setSelectedHeaders] = useState([]);
   const [selectedItems, setSelectedItems] = useState([]);
   const [loadingModal, setLoadingModal] = useState(false);
+  const [loadingMessage, setLoadingMessage] = useState("Please wait...");
 
   useEffect(() => {
     console.log("Project data loaded:", projectData);
@@ -817,17 +821,82 @@ const PptModal = ({ projectData, project }) => {
     }
   };
 
-  const uploadReport = async (fileData, reportName) => {
-    setLoadingModal(true);
-    const fileUploadUrl = `https://solarvest.sharepoint.com/sites/ProjectDevelopment/_api/web/GetFolderByServerRelativeUrl(\'/sites/ProjectDevelopment/ListofImage/${project}\')/Files/add(url=\'${reportName}\',overwrite=true)`;
+  const uploadReport = async (fileDataABuffer, reportName, filePath) => {
+    try {
+      // Check if file size exceeds 200MB
+      const fileLength = fileDataABuffer.byteLength
+      console.log(fileLength)
+      const fileInMB = (fileLength / (1000000)).toFixed(2); //Report size using base-10 (decimal) MB instead of base-2 (binary)
+      console.log(fileInMB)
+      if ( fileInMB > 200) {
+        setTimeout(() => {
+          Alert.alert(
+            "File Size Exceeded",
+            "The file size is more than 200MB. Please upload the file manually to Sharepoint.",
+            [
+              {
+                text: "Cancel",
+                style: "cancel",
+              },
+              {
+                text: "Go to sharepoint",
+                onPress: () => {
+                  Linking.openURL(
+                    `https://solarvest.sharepoint.com/sites/ProjectDevelopment/ListofImage/`
+                  );
+                },
+              },
+            ]
+          );
+        }, 100)
+        return false;
+      }
 
-    const arrayBuffer = toByteArray(fileData);
 
-    // Check if file size exceeds 50MB
-    if (arrayBuffer.length > 52428800) {
+      setLoadingMessage("Report upload inprogress, it will take several minutes. Please wait...")
+      setLoadingModal(true);
+      const fileUploadUrl = `https://solarvest.sharepoint.com/sites/ProjectDevelopment/_api/web/GetFolderByServerRelativeUrl(\'/sites/ProjectDevelopment/ListofImage/${project}\')/Files/add(url=\'${reportName}\',overwrite=true)`;
+
+
+      const [accessToken, formDigest] = await retrieveAccessToken();
+
+      const headers = {
+        Authorization: `Bearer ${accessToken}`,
+        "X-RequestDigest": formDigest,
+        Accept: "application/json; odata=verbose",
+        "Content-Type": "application/octet-stream", // Required for binary
+      }; 
+
+      const response = await axios({
+        method: "POST",
+        url: fileUploadUrl,
+        data: fileDataABuffer,
+        headers: headers,
+        maxBodyLength: Infinity,          // ← Important
+        maxContentLength: Infinity,       // ← Important
+        timeout: 10 * 60 * 1000,          // ← Optional: 10 min timeout
+        onUploadProgress: (progressEvent) => {
+          const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+          console.log(`Upload Progress: ${percent}%`);
+        },
+        validateStatus: function (status) {
+          console.log('Response status from SharePoint:', status);
+          return true; // prevent throwing error for non-200
+        },
+      });
+
+      // console.log(response.status)
+      if (response.data.d.Exists) {
+        console.log("Report Uploaded to Sharepoint: " + reportName);
+        Alert.alert("PowerPoint Report Uploaded Successfully!", reportName);
+        return true;
+      }
+    } catch (error) {
+      console.log("Error Uploading Data in Sharepoint", error);
+      // Alert.alert("Error Uploading Data in Sharepoint", error?.message || String(error));
       Alert.alert(
         "File Size Exceeded",
-        "The file size is more than 50MB. Please upload the file manually to Sharepoint.",
+        "The file size is more than allowed limit by Sharepoint. Please upload the file manually to Sharepoint.",
         [
           {
             text: "Cancel",
@@ -843,32 +912,6 @@ const PptModal = ({ projectData, project }) => {
           },
         ]
       );
-      setLoadingModal(false);
-      return;
-    }
-
-    try {
-      const [accessToken, formDigest] = await retrieveAccessToken();
-
-      const headers = {
-        Authorization: `Bearer ${accessToken}`,
-        "X-RequestDigest": formDigest,
-        Accept: "application/json; odata=verbose",
-      };
-      const response = await axios({
-        method: "POST",
-        url: fileUploadUrl,
-        data: arrayBuffer,
-        headers: headers,
-      });
-      if (response.data.d.Exists) {
-        Alert.alert("PowerPoint Report Uploaded Successfully!", reportName);
-        console.log("Report Uploaded to Sharepoint: " + reportName);
-        return true;
-      }
-      console.log(response.data.d.Exists);
-    } catch (error) {
-      console.log("Error Uploading Data in Sharepoint", error.response.data);
       return false;
     } finally {
       setLoadingModal(false);
@@ -905,6 +948,22 @@ const PptModal = ({ projectData, project }) => {
       }
     }
   };
+
+  const writeLargePPTInChunks = async (filePath, arrayBuffer, chunkSize = 1024 * 1024)=> {
+    const uint8Array = new Uint8Array(arrayBuffer);
+    // Optional: Clear file before writing
+    // await RNFS.writeFile(filePath, '', 'base64');
+    for (let i = 0; i < uint8Array.length; i += chunkSize) {
+      const chunk = uint8Array.slice(i, i + chunkSize);
+      const base64Chunk = Buffer.from(chunk).toString('base64');
+      try {
+        await RNFS.appendFile(filePath, base64Chunk, 'base64');
+      } catch (error) {
+        console.error("Error writing chunk to file:", error);
+        throw error;
+      }
+    }
+  }
 
   const generateTemplate = async () => {
     setLoadingModal(true);
@@ -948,7 +1007,10 @@ const PptModal = ({ projectData, project }) => {
         // If names are equal, sort by categoryId
         return a.categoryId - b.categoryId;
       });
+
       const groupedData = {};
+      let ttlCat, ttlCatItem;
+      ttlCatItem = sortedData.length;
       sortedData.forEach((item) => {
         const { category } = item;
         if (!groupedData[category]) {
@@ -956,6 +1018,8 @@ const PptModal = ({ projectData, project }) => {
         }
         groupedData[category].push(item);
       });
+      ttlCat =  Object.keys(groupedData).length;
+
       const firstPage = ppt.addSlide();
       firstPage.background = { data: backgroundImg };
       firstPage.addText("Client:", {
@@ -1164,6 +1228,7 @@ const PptModal = ({ projectData, project }) => {
 
         // Iterate over the items under the current category to create slides
         for (const item of items) {
+          // console.log(item)
           const { categoryId, picture, description, orientation } = item;
           const itemSlide = ppt.addSlide();
 
@@ -1171,7 +1236,7 @@ const PptModal = ({ projectData, project }) => {
           let imageHeight = 0;
           let aspectRatio = 1;
 
-          console.log("orientation", orientation);
+          // console.log("orientation", orientation);
 
           if (picture) {
             console.log(picture);
@@ -1371,8 +1436,7 @@ const PptModal = ({ projectData, project }) => {
               }
             }
 
-            console.log("imageDimensions///////////", imageWidth);
-            console.log("imageDimensions///////////", imageHeight);
+            console.log("imageDimensions inches W x H ->", `${imageWidth} x ${imageHeight}`);
 
             itemSlide.addImage({
               path: picture,
@@ -1389,6 +1453,8 @@ const PptModal = ({ projectData, project }) => {
           }
         }
       }
+      
+      console.log("Total Category and subitems:", `${ttlCat} & ${ttlCatItem}`);
 
       const additionalNoteSlide = ppt.addSlide();
       additionalNoteSlide.background = { data: mainBackground };
@@ -1423,42 +1489,59 @@ const PptModal = ({ projectData, project }) => {
         { text: " Solution:", options: noteText },
       ];
       additionalNoteSlide.addText(textObj, { x: 0.5, y: 1.5 });
+
       const footerSlide = ppt.addSlide();
       footerSlide.background = { data: mainBackground };
-      const base64 = await ppt.write("base64");
-      const timestamp = new Date().getTime();
 
-      const reportName = `${project}_${timestamp}.pptx`;
+      let startTime = Date.now();
+      // const base64 = await ppt.write("base64");
+      const arrayBuffer = await ppt.write("arraybuffer");
+      let endTime = Date.now();
+      console.log("ppt.write took", (endTime - startTime) / 1000, "seconds");
 
+      const reportName = `${project}_${new Date().getTime()}.pptx`;
       var filePath;
       if (Platform.OS === "ios") {
         filePath = `${RNFS.DocumentDirectoryPath}/${reportName}`;
       } else {
         filePath = `${RNFS.DownloadDirectoryPath}/${reportName}`;
       }
+      console.log(`File path PowerPoint before save: ${filePath}`);
 
-      await writeFileInChunks(filePath, base64);
+      startTime = Date.now();
+      // await writeFileInChunks(filePath, base64);
+      await writeLargePPTInChunks(filePath, arrayBuffer);
       console.log(`File saved successfully at: ${filePath}`);
+      endTime = Date.now();
+      console.log("pptWriteChunks took", (endTime - startTime) / 1000, "seconds");
+
       setLoadingModal(false);
       // shareFile(filePath);
-      Alert.alert(
-        "PowerPoint Report Generated Successful!",
-        `Do you want to upload ${reportName} to Sharepoint?`,
-        [
-          {
-            text: "Skip",
-            style: "cancel",
-          },
-          {
-            text: "Upload",
-            onPress: async () => {
-              await uploadReport(base64, reportName);
+      setTimeout(()=>{
+        Alert.alert(
+          "PowerPoint Report Generated Successful!",
+          `Do you want to upload ${reportName} to Sharepoint?`,
+          [
+            {
+              text: "Skip",
+              style: "cancel",
             },
-          },
-        ]
-      );
+            {
+              text: "Upload",
+              onPress: async () => {
+                startTime = Date.now();
+                await uploadReport(arrayBuffer, reportName, filePath);
+                endTime = Date.now();
+                console.log("uploadReport took", (endTime - startTime) / 1000, "seconds");
+              },
+            },
+          ]
+        );
+      }, 300);
     } catch (error) {
       console.error("Error saving the PowerPoint file:", error);
+      Alert.alert("Error saving the PowerPoint file", error?.message || String(error));
+      setLoadingModal(false);
     }
   };
 
@@ -1491,42 +1574,71 @@ const PptModal = ({ projectData, project }) => {
                 />
               ))}
             </ScrollView>
-            <Button title={"GENERATE"} onPress={generatePowerpoint} />
+            <Button title={"GENERATE"} onPress={()=>{
+              setLoadingMessage("Report generating inprogress, it will take several minutes. Please wait...")
+              generatePowerpoint();
+            }} />
             <Pressable
               style={[styles.button, styles.buttonClose]}
-              onPress={() => setModalVisible(!modalVisible)}
+              onPress={() => {
+                setModalVisible(!modalVisible);
+                setLoadingModal(false);
+              }}
             >
               <Text style={styles.textStyle}>CLOSE</Text>
             </Pressable>
+            <LoadingModal visible={loadingModal} message={loadingMessage} />
           </View>
         </View>
       </Modal>
       <Button title="GENERATE REPORT" onPress={() => setModalVisible(true)} />
-      <LoadingModal status={loadingModal} />
+
+      {/* <LoadingModal visible={loadingModal} /> */}
     </View>
   );
 };
 
 /* CODING MADE BY FAAEZAMIRUDDIN */
-const LoadingModal = ({ status }) => {
+const LoadingModal = ({ visible, progress, message = "Please wait..." }) => {
   return (
-    <Modal
-      animationType="slide"
-      transparent={true}
-      visible={status}
-      onRequestClose={() => {
-        Alert.alert("Modal has been closed.");
-        setModalVisible(!modalVisible);
-      }}
-    >
-      <View style={styles.loadingView}>
-        <View style={styles.backView}>
-          <View style={{ flex: 1 }}>
-            <ActivityIndicator size="large" color="#ffffff" />
-          </View>
+    // <Modal
+    //   animationType="slide"
+    //   transparent={true}
+    //   visible={visible}
+    //   onRequestClose={() => {
+    //     Alert.alert("Modal has been closed.");
+    //     // setModalVisible(!modalVisible);
+    //   }}
+    // >
+    //   <View style={styles.loadingView}>
+    //     <View style={styles.backView}>
+    //       <View style={{ flex: 1 }}>
+    //         <ActivityIndicator size="large" color="#ffffff" />
+    //       </View>
+    //     </View>
+    //   </View>
+    // </Modal>
+
+    <Modal visible={visible} transparent={true} animationType="fade">
+      <View
+        style={{
+          flex: 1,
+          justifyContent: 'center',
+          alignItems: 'center',
+          backgroundColor: 'rgba(0,0,0,0.5)',
+        }}>
+        <View
+          style={{width: '90%',padding: 20, backgroundColor: 'white', borderRadius: 10, alignItems: 'center', }}>
+          <ActivityIndicator size="large" color="#8829A0" />
+          <Text style={{marginTop: 5, fontSize:16, color:"#000"}}>
+            {/* {progress.current}/{progress.total} % */}
+            {message}
+            {/* Report Generating Inprogress, it will take several minutes.
+            Please wait... */}
+          </Text>
         </View>
       </View>
-    </Modal>
+  </Modal>
   );
 };
 
@@ -1723,63 +1835,72 @@ const LoginPage = ({ navigation }) => {
   };*/
 
   return (
-    <View style={styles.loginForm}>
-      <Image
-        source={require("./src/assets/solarvestlogo.png")}
-        style={{
-          resizeMode: "contain",
-          width: "100%",
-          height: "100%",
-          maxHeight: 400,
-        }}
-      />
-      <TextInput
-        style={styles.inputField}
-        value={username}
-        placeholder={"Username"}
-        placeholderTextColor="black"
-        onChangeText={(text) => setUsername(text)}
-        autoCapitalize={"none"}
-        keyboardType={"email-address"}
-      />
-      {/* <TextInput
-        style={styles.inputField}
-        value={password}
-        placeholderTextColor="black"
-        placeholder={"Password"}
-        secureTextEntry
-        onChangeText={(text) => setPassword(text)}
-      /> */}
-      <View
-        style={[
-          styles.inputField,
-          { flexDirection: "row", alignItems: "center" },
-        ]}
-      >
-        <TextInput
-          style={{ flex: 1, color: "black" }}
-          value={password}
-          placeholder="Password"
-          placeholderTextColor="black"
-          secureTextEntry={!showPassword}
-          onChangeText={(text) => setPassword(text)}
-          autoCapitalize="none"
-        />
-        <TouchableOpacity onPress={() => setShowPassword(!showPassword)}>
-          <FontAwesome5
-            name={showPassword ? "eye-slash" : "eye"}
-            size={24}
-            color="gray"
-            style={{ marginRight: 8 }}
-          />
-        </TouchableOpacity>
-      </View>
-      <TouchableOpacity onPress={doUserLogIn}>
-        <View style={styles.loginButton}>
-          <Text style={styles.buttonText}>{"Sign in"}</Text>
-        </View>
-      </TouchableOpacity>
-    </View>
+    <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+      <KeyboardAvoidingView
+        style={{ flex: 1, }}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}>
+        <ScrollView
+          keyboardShouldPersistTaps='handled'
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', paddingBottom: 80, }}>
+          <View style={styles.loginForm}>
+            <Image
+                  source={require("./src/assets/solarvestlogo.png")}
+                  style={{
+                    resizeMode: "contain",
+                    width: "100%",
+                    height: "100%",
+                    maxHeight: 400,
+                  }}
+                />
+            <TextInput
+              style={styles.inputField}
+              value={username}
+              placeholder={"Username"}
+              placeholderTextColor="black"
+              onChangeText={(text) => setUsername(text)}
+              autoCapitalize={"none"}
+              keyboardType={"email-address"}
+              autoComplete="off"
+              textContentType="oneTimeCode"          
+              importantForAutofill="no"
+              enablesReturnKeyAutomatically
+            />
+            <View
+              style={[
+                styles.inputField,
+                { flexDirection: "row", alignItems: "center" },
+              ]}
+            >
+              <TextInput
+                style={{ flex: 1, color: "black" }}
+                value={password}
+                placeholder="Password"
+                placeholderTextColor="black"
+                secureTextEntry={!showPassword}
+                onChangeText={(text) => setPassword(text)}
+                autoCapitalize="none"
+                autoComplete="off"       // ✅ Add this
+                textContentType="none"   // ✅ Add this
+              />
+              <TouchableOpacity onPress={() => setShowPassword(!showPassword)}>
+                <FontAwesome5
+                  name={showPassword ? "eye-slash" : "eye"}
+                  size={24}
+                  color="gray"
+                  style={{ marginRight: 8 }}
+                />
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity onPress={doUserLogIn}>
+              <View style={styles.loginButton}>
+                <Text style={styles.buttonText}>{"Sign in"}</Text>
+              </View>
+            </TouchableOpacity>
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </TouchableWithoutFeedback>
   );
 };
 
@@ -2227,9 +2348,16 @@ function App() {
 /////////////////////////////////// Styles ///////////////////////////////////////////////////////////////
 const styles = StyleSheet.create({
   //login page
+  layout_container: { flex: 1, flexDirection: 'column', width: '100%', height: '100%' },
+  centerV: { justifyContent: 'center' },
+  scrollContainer: {
+    flexGrow: 1,
+    justifyContent: 'space-between',
+  },
   loginForm: {
     flex: 1,
-    justifyContent: "center",
+    // justifyContent: "center",
+    justifyContent: 'flex-end', // push inputs to bottom
     alignItems: "center",
     padding: 20,
     // backgroundColor:'wh'

@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
 	<key>NSPhotoLibraryUsageDescription</key>
-<string>We need access to your photo library to upload images.</string>
-<key>NSCameraUsageDescription</key>
-<string>We need access to your camera to take photos.</string>
-<key>NSPhotoLibraryAddUsageDescription</key>
-<string>We need access to save photos to your library.</string>
+	<string>We requird Photo Gallery access to upload images to create Presentation Slide. There is no other use and it's safe and secure.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>We requird your Camera access to take photos to create Presentation Slide. There is no other use and it's safe and secure.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>We requird Photo Gallery access to save photos to your library of your Presentation Slides. There is no other use and it's safe and secure.</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
@@ -42,7 +42,7 @@
 		</dict>
 	</dict>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string></string>
+	<string>This app does not use location services, but third-party libraries may reference location APIs Eg. may request location metadata from photos. This app is safe and secure. We always keep privacy and user data secure. Thanks!</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 
@@ -80,5 +80,9 @@
 		<string>Zocial.ttf</string>
 		<string>Fontisto.ttf</string>
 	</array>
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
 </dict>
 </plist>
