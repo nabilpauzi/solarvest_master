@@ -3,15 +3,28 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import axios from "axios";
 
-export const retrieveAccessToken = async () => {
-  let clientId, clientSecret, tenantId;
-  // clientId = '0e6152d6-81a4-4339-aa9a-db58a3ae57e2';
-  // clientSecret = '3NLkOpaD1rLKubGUcEqEPJQvMZab8MuDoWw39E81eko=';
-  clientId = "b1734805-3b9c-4032-a86a-dadaf3773fae";
-  clientSecret = "_yi8Q~IKwqvZBn35SM9wLVV27qbuzLYexY1Dyao7";
-  tenantId = "4a49838b-9576-4a6e-9bac-3704ad1e3866";
+// Import Config with error handling
+let Config;
+try {
+  Config = require("react-native-config").default || require("react-native-config");
+} catch (e) {
+  console.warn("react-native-config not available, using fallback");
+  Config = null;
+}
 
-  const tokenUrl = `https://accounts.accesscontrol.windows.net/4a49838b-9576-4a6e-9bac-3704ad1e3866/tokens/OAuth/2`;
+export const retrieveAccessToken = async () => {
+  // Get credentials from environment variables (secure storage)
+  // Fallback to hardcoded values if Config is not available (for development/debugging)
+  const clientId = Config?.SHAREPOINT_CLIENT_ID || "b1734805-3b9c-4032-a86a-dadaf3773fae";
+  const clientSecret = Config?.SHAREPOINT_CLIENT_SECRET || "_yi8Q~IKwqvZBn35SM9wLVV27qbuzLYexY1Dyao7";
+  const tenantId = Config?.SHAREPOINT_TENANT_ID || "4a49838b-9576-4a6e-9bac-3704ad1e3866";
+  
+  // Warn if using fallback (should only happen during development)
+  if (!Config || !Config.SHAREPOINT_CLIENT_ID) {
+    console.warn("⚠️ Using fallback credentials. Make sure react-native-config is properly configured and app is rebuilt.");
+  }
+
+  const tokenUrl = `https://accounts.accesscontrol.windows.net/${tenantId}/tokens/OAuth/2`;
   const formDigestUrl = `https://solarvest.sharepoint.com/sites/ProjectDevelopment/_api/contextinfo`;
   const headers = {
     "Content-Type": "application/x-www-form-urlencoded",

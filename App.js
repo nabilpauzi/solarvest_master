@@ -80,14 +80,21 @@ import {
 import BackgroundFetch from "react-native-background-fetch";
 import { LogBox } from "react-native";
 
-import shareFile from "./src/utils/shareUtils.js";
+import shareFile, { saveToDownloads } from "./src/utils/shareUtils.js";
 
 import { categories } from "./src/const/data.js";
 
 import { generateUniqueId } from "./src/utils/commonUtils.js";
 
 LogBox.ignoreLogs(["Warning: ..."]); // Ignore log notification by message
-LogBox.ignoreAllLogs(); //Ignore all log notifications
+LogBox.ignoreAllLogs(); //Ignore all log notifications
+
+// Define the order sequence for categories in PowerPoint presentation
+// This ensures categories appear in the correct order in the PPT
+const categoryOrderMap = categories.reduce((acc, category, index) => {
+  acc[category.name] = index + 1; // Start from 1, not 0
+  return acc;
+}, {});
 
 const Stack = createNativeStackNavigator();
 
@@ -951,18 +958,41 @@ const PptModal = ({ projectData, project }) => {
 
   const writeLargePPTInChunks = async (filePath, arrayBuffer, chunkSize = 1024 * 1024)=> {
     const uint8Array = new Uint8Array(arrayBuffer);
-    // Optional: Clear file before writing
-    // await RNFS.writeFile(filePath, '', 'base64');
+    const totalSize = uint8Array.length;
+    console.log(`Starting to write file: ${filePath}, Total size: ${totalSize} bytes, Chunks: ${Math.ceil(totalSize / chunkSize)}`);
+    
+    // Ensure directory exists
+    const dirPath = filePath.substring(0, filePath.lastIndexOf('/'));
+    const dirExists = await RNFS.exists(dirPath);
+    if (!dirExists) {
+      console.log(`Directory does not exist, creating: ${dirPath}`);
+      await RNFS.mkdir(dirPath);
+    }
+    
+    // Clear file before writing (start fresh)
+    try {
+      await RNFS.writeFile(filePath, '', 'utf8');
+    } catch (error) {
+      console.warn("Warning: Could not clear file before writing:", error);
+    }
+    
+    let bytesWritten = 0;
     for (let i = 0; i < uint8Array.length; i += chunkSize) {
       const chunk = uint8Array.slice(i, i + chunkSize);
       const base64Chunk = Buffer.from(chunk).toString('base64');
       try {
         await RNFS.appendFile(filePath, base64Chunk, 'base64');
+        bytesWritten += chunk.length;
+        if ((i / chunkSize) % 10 === 0 || i + chunkSize >= totalSize) {
+          console.log(`Progress: ${bytesWritten}/${totalSize} bytes (${((bytesWritten / totalSize) * 100).toFixed(1)}%)`);
+        }
       } catch (error) {
-        console.error("Error writing chunk to file:", error);
+        console.error(`Error writing chunk ${i / chunkSize + 1} to file:`, error);
+        console.error(`Error details:`, JSON.stringify(error, null, 2));
         throw error;
       }
     }
+    console.log(`File write completed. Total bytes written: ${bytesWritten}`);
   }
 
   const generateTemplate = async () => {
@@ -999,13 +1029,20 @@ const PptModal = ({ projectData, project }) => {
 
       let ppt = new pptxgen();
 
+      // Sort data by category order (from categoryOrderMap) and then by categoryId within each category
       const sortedData = filteredData.sort((a, b) => {
-        // First, sort by name
-        if (a.category < b.category) return -1;
-        if (a.category > b.category) return 1;
+        // First, sort by category order (using categoryOrderMap)
+        const orderA = categoryOrderMap[a.category] !== undefined ? categoryOrderMap[a.category] : 9999;
+        const orderB = categoryOrderMap[b.category] !== undefined ? categoryOrderMap[b.category] : 9999;
+        
+        if (orderA !== orderB) {
+          return orderA - orderB;
+        }
 
-        // If names are equal, sort by categoryId
-        return a.categoryId - b.categoryId;
+        // If same category, sort by categoryId (convert to number for proper numeric sorting)
+        const categoryIdA = parseInt(a.categoryId) || 0;
+        const categoryIdB = parseInt(b.categoryId) || 0;
+        return categoryIdA - categoryIdB;
       });
 
       const groupedData = {};
@@ -1018,6 +1055,28 @@ const PptModal = ({ projectData, project }) => {
         }
         groupedData[category].push(item);
       });
+      
+      // Ensure items within each category are sorted by categoryId
+      Object.keys(groupedData).forEach((category) => {
+        groupedData[category].sort((a, b) => {
+          const categoryIdA = parseInt(a.categoryId) || 0;
+          const categoryIdB = parseInt(b.categoryId) || 0;
+          return categoryIdA - categoryIdB;
+        });
+      });
+      
+      // Log sequence for verification
+      console.log("=== PPT SEQUENCE VERIFICATION ===");
+      const sortedCategories = Object.keys(groupedData).sort((catA, catB) => {
+        const orderA = categoryOrderMap[catA] || 9999;
+        const orderB = categoryOrderMap[catB] || 9999;
+        return orderA - orderB;
+      });
+      sortedCategories.forEach((category, index) => {
+        const items = groupedData[category];
+        console.log(`${index + 1}. ${category} (Order: ${categoryOrderMap[category] || 'Unknown'}) - ${items.length} items`);
+      });
+      console.log("=== END SEQUENCE VERIFICATION ===");
       ttlCat =  Object.keys(groupedData).length;
 
       const firstPage = ppt.addSlide();
@@ -1088,7 +1147,15 @@ const PptModal = ({ projectData, project }) => {
         w: "30%",
         h: 1,
       });
-      for (const [category, items] of Object.entries(groupedData)) {
+      
+      // Sort groupedData entries according to predefined category order
+      const sortedGroupedEntries = Object.entries(groupedData).sort(([categoryA], [categoryB]) => {
+        const orderA = categoryOrderMap[categoryA] !== undefined ? categoryOrderMap[categoryA] : 9999;
+        const orderB = categoryOrderMap[categoryB] !== undefined ? categoryOrderMap[categoryB] : 9999;
+        return orderA - orderB;
+      });
+
+      for (const [category, items] of sortedGroupedEntries) {
         // Add a new slide for the category
         const categorySlide = ppt.addSlide();
         categorySlide.background = { data: titleBackgroundImg };
@@ -1501,39 +1568,90 @@ const PptModal = ({ projectData, project }) => {
 
       const reportName = `${project}_${new Date().getTime()}.pptx`;
       var filePath;
-      if (Platform.OS === "ios") {
-        filePath = `${RNFS.DocumentDirectoryPath}/${reportName}`;
-      } else {
-        filePath = `${RNFS.DownloadDirectoryPath}/${reportName}`;
-      }
+      
+      // Always save to app's document directory first (guaranteed to work)
+      // On Android 10+, Downloads folder requires MediaStore API to be visible in file manager
+      filePath = `${RNFS.DocumentDirectoryPath}/${reportName}`;
+      
       console.log(`File path PowerPoint before save: ${filePath}`);
+      console.log(`Platform: ${Platform.OS}, DocumentDirectoryPath: ${RNFS.DocumentDirectoryPath}`);
+      if (Platform.OS === "android") {
+        console.log(`DownloadDirectoryPath: ${RNFS.DownloadDirectoryPath}`);
+      }
 
       startTime = Date.now();
-      // await writeFileInChunks(filePath, base64);
-      await writeLargePPTInChunks(filePath, arrayBuffer);
-      console.log(`File saved successfully at: ${filePath}`);
+      
+      try {
+        // Save file to app's document directory
+        await writeLargePPTInChunks(filePath, arrayBuffer);
+        
+        // Verify file exists after writing
+        const fileExists = await RNFS.exists(filePath);
+        if (!fileExists) {
+          throw new Error(`File was not created at ${filePath}. The write operation may have failed silently.`);
+        }
+        
+        const fileStats = await RNFS.stat(filePath);
+        console.log(`File saved successfully at: ${filePath}`);
+        console.log(`File size: ${fileStats.size} bytes`);
+        
+        // On Android, automatically attempt to save to Downloads folder
+        // This uses MediaStore API and makes the file visible in file manager
+        if (Platform.OS === "android") {
+          try {
+            console.log("Attempting to save file to Downloads folder (visible in file manager)...");
+            const saved = await saveToDownloads(filePath, reportName);
+            if (saved) {
+              console.log("File successfully saved to Downloads folder!");
+            } else {
+              console.log("File saved to app directory. User can use 'Save to Downloads' option to copy it.");
+            }
+          } catch (downloadsError) {
+            console.log("Could not automatically save to Downloads, but file is saved in app directory:", downloadsError.message);
+            // File is still accessible at filePath for upload
+          }
+        }
+      } catch (error) {
+        console.error("Error during file write:", error);
+        throw error;
+      }
+      
       endTime = Date.now();
       console.log("pptWriteChunks took", (endTime - startTime) / 1000, "seconds");
 
       setLoadingModal(false);
-      // shareFile(filePath);
+      
+      // Show success message with options
       setTimeout(()=>{
         Alert.alert(
           "PowerPoint Report Generated Successful!",
-          `Do you want to upload ${reportName} to Sharepoint?`,
+          `File saved: ${reportName}\n\nWhat would you like to do?`,
           [
             {
-              text: "Skip",
-              style: "cancel",
+              text: "Save to Downloads",
+              onPress: async () => {
+                if (Platform.OS === "android") {
+                  const saved = await saveToDownloads(filePath, reportName);
+                  if (saved) {
+                    Alert.alert("Success", "File saved to Downloads folder!");
+                  }
+                } else {
+                  Alert.alert("Info", "On iOS, file is saved in app directory.");
+                }
+              },
             },
             {
-              text: "Upload",
+              text: "Upload to Sharepoint",
               onPress: async () => {
                 startTime = Date.now();
                 await uploadReport(arrayBuffer, reportName, filePath);
                 endTime = Date.now();
                 console.log("uploadReport took", (endTime - startTime) / 1000, "seconds");
               },
+            },
+            {
+              text: "Skip",
+              style: "cancel",
             },
           ]
         );
@@ -1772,6 +1890,7 @@ const LoginPage = ({ navigation }) => {
     const credentials = {
       Solarvestpd001: "Preconstruction001",
       Solarvestpd002: "Preconstruction002",
+      TestUser: "Test1234",
       // SolarvestSiteSurvey00: "SV890432",
       // SLVYX: "SLV001",
       // SLVAdam: "SLV002",
@@ -1961,6 +2080,8 @@ function App() {
         const loadImageBase64 = async (capturedImageURI) => {
           try {
             const base64Data = await RNFS.readFile(capturedImageURI, "base64");
+            console.log("base64Data:-----_---__------->>>> ", base64Data);
+            
             return base64Data;
           } catch (error) {
             console.error("Error converting image to base64:", error);
