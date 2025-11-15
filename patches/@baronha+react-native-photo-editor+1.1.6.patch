@@ -1,0 +1,180 @@
+diff --git a/node_modules/@baronha/react-native-photo-editor/ios/ZLImageEditor/Sources/General/ZLEditImageViewController.swift b/node_modules/@baronha/react-native-photo-editor/ios/ZLImageEditor/Sources/General/ZLEditImageViewController.swift
+index 4b8b443..b7ba4db 100644
+--- a/node_modules/@baronha/react-native-photo-editor/ios/ZLImageEditor/Sources/General/ZLEditImageViewController.swift
++++ b/node_modules/@baronha/react-native-photo-editor/ios/ZLImageEditor/Sources/General/ZLEditImageViewController.swift
+@@ -146,6 +146,10 @@ public class ZLEditImageViewController: UIViewController {
+     
+     var drawLineWidth: CGFloat = 5
+     
++    var drawStartPoint: CGPoint?
++    
++    var straightenTimer: Timer?
++    
+     var mosaicPaths: [ZLMosaicPath]
+     
+     var mosaicLineWidth: CGFloat = 25
+@@ -187,6 +191,8 @@ public class ZLEditImageViewController: UIViewController {
+     }
+     
+     deinit {
++        self.straightenTimer?.invalidate()
++        self.straightenTimer = nil
+         zl_debugPrint("ZLEditImageViewController deinit")
+     }
+     
+@@ -739,7 +745,12 @@ public class ZLEditImageViewController: UIViewController {
+         if self.selectedTool == .draw {
+             let point = pan.location(in: self.drawingImageView)
+             if pan.state == .began {
++                // Cancel any existing straightening timer
++                self.straightenTimer?.invalidate()
++                self.straightenTimer = nil
++                
+                 self.setToolView(show: false)
++                self.drawStartPoint = point
+                 
+                 let originalRatio = min(self.scrollView.frame.width / self.originalImage.size.width, self.scrollView.frame.height / self.originalImage.size.height)
+                 let ratio = min(self.scrollView.frame.width / self.editRect.width, self.scrollView.frame.height / self.editRect.height)
+@@ -760,10 +771,90 @@ public class ZLEditImageViewController: UIViewController {
+                 let path = ZLDrawPath(pathColor: self.currentDrawColor, pathWidth: self.drawLineWidth / self.scrollView.zoomScale, ratio: ratio / originalRatio / toImageScale, startPoint: point)
+                 self.drawPaths.append(path)
+             } else if pan.state == .changed {
++                // Normal drawing - no real-time straightening
+                 let path = self.drawPaths.last
+                 path?.addLine(to: point)
+                 self.drawLine()
+             } else if pan.state == .cancelled || pan.state == .ended {
++                // Schedule delayed straightening after 1.5 seconds
++                if let startPoint = self.drawStartPoint, let path = self.drawPaths.last {
++                    let finalPoint = point
++                    
++                    // Cancel any existing timer
++                    self.straightenTimer?.invalidate()
++                    
++                    // Create timer for delayed straightening (1.5 seconds)
++                    self.straightenTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { [weak self] _ in
++                        guard let self = self, let path = self.drawPaths.last else { return }
++                        
++                        let dx = finalPoint.x - startPoint.x
++                        let dy = finalPoint.y - startPoint.y
++                        let distance = sqrt(dx * dx + dy * dy)
++                        
++                        // Straighten ALL lines (minimum 2 points to avoid errors)
++                        if distance > 2 {
++                            // Calculate angle in radians
++                            let angleRad = atan2(dy, dx)
++                            // Convert to degrees
++                            var angleDeg = angleRad * 180.0 / .pi
++                            // Normalize to 0-360
++                            if angleDeg < 0 {
++                                angleDeg += 360.0
++                            }
++                            
++                            // Define major angles: 0°, 45°, 90°, 135°, 180°, 225°, 270°, 315°
++                            let majorAngles: [CGFloat] = [0, 45, 90, 135, 180, 225, 270, 315]
++                            
++                            // Find nearest major angle (handle wrap-around)
++                            var nearestAngle = majorAngles[0]
++                            var minDiff = min(abs(angleDeg - majorAngles[0]), 360 - abs(angleDeg - majorAngles[0]))
++                            for majorAngle in majorAngles {
++                                let diff = min(abs(angleDeg - majorAngle), 360 - abs(angleDeg - majorAngle))
++                                if diff < minDiff {
++                                    minDiff = diff
++                                    nearestAngle = majorAngle
++                                }
++                            }
++                            
++                            // Always straighten - remove angle threshold
++                            // Convert back to radians
++                            let snappedAngleRad = nearestAngle * .pi / 180.0
++                            
++                            // Calculate end point based on snapped angle and original distance
++                            let endPoint = CGPoint(
++                                x: startPoint.x + cos(snappedAngleRad) * distance,
++                                y: startPoint.y + sin(snappedAngleRad) * distance
++                            )
++                            
++                            // Reset path to start point and add straight line to snapped end point
++                            let pathRatio = path.ratio
++                            path.path.removeAllPoints()
++                            let scaledStartPoint = CGPoint(x: startPoint.x / pathRatio, y: startPoint.y / pathRatio)
++                            let scaledEndPoint = CGPoint(x: endPoint.x / pathRatio, y: endPoint.y / pathRatio)
++                            path.path.move(to: scaledStartPoint)
++                            path.path.addLine(to: scaledEndPoint)
++                            
++                            // Add arrowhead at the end of the line
++                            // Calculate arrowhead size based on line width (increased size)
++                            let lineWidth = path.path.lineWidth
++                            let arrowLength = max(25, lineWidth * 5) // Arrow length proportional to line width (increased)
++                            let arrowWidth = max(18, lineWidth * 3.5) // Arrow width proportional to line width (increased)
++                            
++                            path.addArrowhead(at: scaledEndPoint, angle: snappedAngleRad, arrowLength: arrowLength, arrowWidth: arrowWidth)
++                            path.shapeLayer.path = path.path.cgPath
++                            
++                            self.drawLine()
++                        }
++                    }
++                    
++                    // Add timer to main run loop to ensure it fires
++                    if let timer = self.straightenTimer {
++                        RunLoop.main.add(timer, forMode: .common)
++                    }
++                }
++                
++                // Reset start point
++                self.drawStartPoint = nil
+                 self.setToolView(show: true)
+                 self.revokeBtn.isEnabled = self.drawPaths.count > 0
+             }
+@@ -1457,7 +1548,51 @@ public class ZLDrawPath: NSObject {
+     
+     func drawPath() {
+         self.pathColor.set()
++        // Stroke the line first
+         self.path.stroke()
++        // Fill any closed paths (arrowhead) - this only affects closed subpaths
++        self.pathColor.setFill()
++        self.path.fill()
++    }
++    
++    func addArrowhead(at endPoint: CGPoint, angle: CGFloat, arrowLength: CGFloat = 25, arrowWidth: CGFloat = 18) {
++        // Calculate arrowhead points
++        // Arrow points backwards from the end point along the line direction
++        let arrowAngle = angle // Line direction angle
++        let halfArrowWidth = arrowWidth / 2
++        
++        // Calculate the arrow tip point (slightly inside from the end point)
++        let tipOffset = arrowLength * 0.8 // Arrow tip inset from end
++        let tipPoint = CGPoint(
++            x: endPoint.x - cos(arrowAngle) * tipOffset,
++            y: endPoint.y - sin(arrowAngle) * tipOffset
++        )
++        
++        // Calculate left and right arrow wing points (perpendicular to line direction)
++        let leftAngle = arrowAngle + .pi / 2
++        let rightAngle = arrowAngle - .pi / 2
++        
++        let leftPoint = CGPoint(
++            x: tipPoint.x + cos(leftAngle) * halfArrowWidth,
++            y: tipPoint.y + sin(leftAngle) * halfArrowWidth
++        )
++        
++        let rightPoint = CGPoint(
++            x: tipPoint.x + cos(rightAngle) * halfArrowWidth,
++            y: tipPoint.y + sin(rightAngle) * halfArrowWidth
++        )
++        
++        // Create arrowhead path (triangle pointing backward from end)
++        let arrowPath = UIBezierPath()
++        arrowPath.move(to: endPoint)
++        arrowPath.addLine(to: leftPoint)
++        arrowPath.addLine(to: tipPoint)
++        arrowPath.addLine(to: rightPoint)
++        arrowPath.close()
++        
++        // Add arrowhead to the main path
++        self.path.append(arrowPath)
++        self.shapeLayer.path = self.path.cgPath
+     }
+     
+ }
