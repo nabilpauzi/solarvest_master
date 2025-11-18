@@ -18,7 +18,8 @@ import {
 } from "react-native";
 
 // import { Linking, Alert } from 'react-native'; // Import Linking and Alert for notifications and settings
-import { TapGestureHandler, GestureHandlerRootView } from 'react-native-gesture-handler';
+import { TapGestureHandler, GestureHandlerRootView, Gesture, GestureDetector } from 'react-native-gesture-handler';
+import Reanimated, { useAnimatedProps, useSharedValue, interpolate, Extrapolation, runOnJS, useAnimatedReaction, useAnimatedStyle, withSpring, useDerivedValue } from 'react-native-reanimated';
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import { launchImageLibrary } from "react-native-image-picker";
@@ -1149,6 +1150,12 @@ export const CategoryScreen = ({ route, navigation }) => {
 
 //$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$ Camera Screen $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 
+// Setup Reanimated Camera for zoom functionality
+Reanimated.addWhitelistedNativeProps({
+  zoom: true,
+});
+const ReanimatedCamera = Reanimated.createAnimatedComponent(Camera);
+
 export const CameraScreen = ({ route, navigation }) => {
   const { category, amount, categoryId, project, tempImageSection } =
     route.params;
@@ -1178,12 +1185,209 @@ export const CameraScreen = ({ route, navigation }) => {
   // Camera device and reference
   const device = useCameraDevice("back");
   const camera = useRef(null);
+  const sliderTrackRef = useRef(null);
+  const [sliderTrackLayout, setSliderTrackLayout] = useState({ y: 0, height: 200 });
   const [flash, setFlash] = useState('off'); // off, on, auto
 
   // Error handling callback
   const onError = useCallback((error) => {
     console.error("Camera Error:", error);
   }, []);
+
+  // Focus handler - must be defined before gestures
+  const handleFocusTap = useCallback(async (event) => {
+    const { x, y } = event.nativeEvent;
+    console.log("native event x y %d %d", x, y);
+    try {
+      if (camera.current) {
+        await camera.current.focus({ x: x, y: y });
+        console.log('Focus call sent');
+      }
+    } catch (e) {
+      console.warn('Focus failed:', e);
+    }
+  }, []);
+
+  // Zoom functionality - initialize to 1.5x camera zoom (displays as 1x in UI)
+  const zoom = useSharedValue(1.5);
+  const zoomOffset = useSharedValue(0); // For pinch gesture tracking
+
+  // Zoom range with offset mapping:
+  // UI displays: 0.5x to 4x
+  // Camera actual: 1x to 4.5x (where 1.5x camera = 1x UI display)
+  // This allows "zoom out" UI effect even on devices that don't support < 1x hardware zoom
+  const uiMinZoom = 0.5; // UI minimum (displayed as 0.5x)
+  const uiMaxZoom = 4; // UI maximum (displayed as 4x)
+  const uiDefaultZoom = 1; // UI default (displayed as 1x, but camera will be 1.5x)
+  
+  const cameraMinZoom = 1; // Camera actual minimum (hardware limit)
+  const cameraMaxZoom = 4.5; // Camera actual maximum
+  const cameraDefaultZoom = 1.5; // Camera actual default (displayed as 1x in UI)
+  
+  // Offset: UI zoom + 0.5 = Camera zoom (so UI 0.5x = Camera 1x, UI 1x = Camera 1.5x)
+  const zoomOffsetValue = 0.5;
+
+  // Initialize zoom to cameraDefaultZoom (1.5x) when device is available
+  // This will be displayed as 1x in the UI
+  useEffect(() => {
+    if (device) {
+      console.log('Camera Device Zoom Capabilities:', {
+        minZoom: device.minZoom,
+        maxZoom: device.maxZoom,
+        neutralZoom: device.neutralZoom,
+        supportsZoomOut: device.minZoom < 1,
+        cameraDefaultZoom: cameraDefaultZoom,
+        uiDisplayZoom: uiDefaultZoom,
+      });
+      zoom.value = cameraDefaultZoom; // Set camera to 1.5x (displays as 1x in UI)
+    }
+  }, [device, cameraDefaultZoom]);
+
+  // Pinch gesture for zoom - recreate when device changes
+  const pinchGesture = React.useMemo(() => {
+    if (!device) return Gesture.Pinch();
+    
+    // Use device's actual zoom range (minZoom to maxZoom, capped at 3x)
+    const deviceMinZoom = device.minZoom ?? 1;
+    const deviceMaxZoom = Math.min(device.maxZoom ?? 3, 3);
+    
+    return Gesture.Pinch()
+      .onBegin(() => {
+        zoomOffset.value = zoom.value;
+      })
+      .onUpdate((event) => {
+        const z = zoomOffset.value * event.scale;
+        // Clamp zoom between device's minZoom and maxZoom (capped at 3x)
+        zoom.value = Math.max(deviceMinZoom, Math.min(deviceMaxZoom, z));
+      });
+  }, [device]);
+
+  // Tap gesture for focus
+  const tapGesture = React.useMemo(() => {
+    return Gesture.Tap()
+      .onEnd((event) => {
+        // Gesture.Tap provides x and y directly, not in nativeEvent
+        const { x, y } = event;
+        runOnJS(handleFocusTap)({ nativeEvent: { x, y } });
+      });
+  }, [handleFocusTap]);
+
+  // Combined gesture - allow both tap and pinch
+  const composedGesture = React.useMemo(() => {
+    return Gesture.Simultaneous(tapGesture, pinchGesture);
+  }, [tapGesture, pinchGesture]);
+
+  // Animated props for zoom
+  const animatedProps = useAnimatedProps(() => ({
+    zoom: zoom.value,
+  }), [zoom]);
+
+
+  // Zoom control handlers - work with camera zoom values (1x to 3.5x)
+  const handleZoomIn = useCallback(() => {
+    if (!device) return;
+    const currentZoom = zoom.value;
+    const newZoom = Math.min(cameraMaxZoom, currentZoom + 0.5);
+    zoom.value = withSpring(newZoom, {
+      damping: 15,
+      stiffness: 150,
+    });
+  }, [device, zoom, cameraMaxZoom]);
+
+  const handleZoomOut = useCallback(() => {
+    if (!device) return;
+    const currentZoom = zoom.value;
+    const newZoom = Math.max(cameraMinZoom, currentZoom - 0.5);
+    zoom.value = withSpring(newZoom, {
+      damping: 15,
+      stiffness: 150,
+    });
+  }, [device, zoom, cameraMinZoom]);
+
+  // Pan gesture for slider - improved coordinate handling
+  // Maps slider position to camera zoom: bottom=cameraMinZoom(1x), center=cameraDefaultZoom(1.5x), top=cameraMaxZoom(3.5x)
+  // UI displays: bottom=0.5x, center=1x, top=3x
+  // Uses non-linear mapping: bottom 50% = cameraMinZoom-cameraDefaultZoom, top 50% = cameraDefaultZoom-cameraMaxZoom
+  const sliderPanGesture = React.useMemo(() => {
+    if (!device) return Gesture.Pan();
+    
+    return Gesture.Pan()
+      .onUpdate((event) => {
+        // event.y is relative to the gesture handler (slider track container)
+        // The container has paddingVertical: 10, so track starts at y=10
+        const trackStart = 10;
+        const sliderHeight = 180; // Actual track height (200 - 20 padding)
+        
+        // Get relative position within the track
+        const relativeY = event.y - trackStart;
+        
+        // Clamp to track bounds (0 to sliderHeight)
+        const clampedY = Math.max(0, Math.min(sliderHeight, relativeY));
+        
+        // Calculate slider progress (inverted: 0 at bottom, 1 at top)
+        const sliderProgress = 1 - (clampedY / sliderHeight);
+        
+        // Non-linear mapping: 
+        // - Bottom 50% of slider (sliderProgress 0-0.5) maps to cameraMinZoom-cameraDefaultZoom (1x-1.5x)
+        // - Top 50% of slider (sliderProgress 0.5-1) maps to cameraDefaultZoom-cameraMaxZoom (1.5x-3.5x)
+        let newZoom;
+        if (sliderProgress <= 0.5) {
+          // Bottom half: map 0-0.5 slider progress to cameraMinZoom-cameraDefaultZoom
+          const bottomProgress = sliderProgress / 0.5; // Normalize to 0-1
+          newZoom = cameraMinZoom + (cameraDefaultZoom - cameraMinZoom) * bottomProgress;
+        } else {
+          // Top half: map 0.5-1 slider progress to cameraDefaultZoom-cameraMaxZoom
+          const topProgress = (sliderProgress - 0.5) / 0.5; // Normalize to 0-1
+          newZoom = cameraDefaultZoom + (cameraMaxZoom - cameraDefaultZoom) * topProgress;
+        }
+        
+        // Apply zoom with smooth update
+        zoom.value = newZoom;
+      });
+  }, [device, zoom, cameraMinZoom, cameraMaxZoom, cameraDefaultZoom]);
+
+  // Animated style for slider indicator
+  // Maps camera zoom value to slider position: cameraMinZoom(1x)=bottom, cameraDefaultZoom(1.5x)=center, cameraMaxZoom(3.5x)=top
+  // Uses non-linear mapping: bottom 50% = cameraMinZoom-cameraDefaultZoom, top 50% = cameraDefaultZoom-cameraMaxZoom
+  const sliderIndicatorStyle = useAnimatedStyle(() => {
+    if (!device) {
+      return { top: 100 - 6 }; // Default center position
+    }
+    
+    const sliderHeight = 180; // Track height
+    const trackStart = 10; // Top padding
+    
+    // Non-linear mapping to ensure cameraDefaultZoom (1.5x) is at center:
+    // - Bottom 50% of slider maps to cameraMinZoom-cameraDefaultZoom (1x-1.5x)
+    // - Top 50% of slider maps to cameraDefaultZoom-cameraMaxZoom (1.5x-3.5x)
+    let adjustedProgress;
+    if (zoom.value <= cameraDefaultZoom) {
+      // Bottom half: map cameraMinZoom-cameraDefaultZoom to 0%-50% of slider
+      const bottomRange = cameraDefaultZoom - cameraMinZoom;
+      if (bottomRange > 0) {
+        const bottomProgress = (zoom.value - cameraMinZoom) / bottomRange;
+        adjustedProgress = Math.max(0, Math.min(0.5, bottomProgress * 0.5));
+      } else {
+        adjustedProgress = 0.5; // If cameraMinZoom == cameraDefaultZoom, stay at center
+      }
+    } else {
+      // Top half: map cameraDefaultZoom-cameraMaxZoom to 50%-100% of slider
+      const topRange = cameraMaxZoom - cameraDefaultZoom;
+      if (topRange > 0) {
+        const topProgress = (zoom.value - cameraDefaultZoom) / topRange;
+        adjustedProgress = Math.max(0.5, Math.min(1, 0.5 + (topProgress * 0.5)));
+      } else {
+        adjustedProgress = 0.5; // If cameraMaxZoom == cameraDefaultZoom, stay at center
+      }
+    }
+    
+    // Inverted: top is max zoom, bottom is min zoom
+    const top = trackStart + sliderHeight * (1 - adjustedProgress);
+    
+    return {
+      top: top - 6, // Center the indicator (12px height / 2)
+    };
+  }, [device, cameraMinZoom, cameraMaxZoom, cameraDefaultZoom]);
 
   // Function to capture a photo
   const takePhoto = async () => {
@@ -1270,17 +1474,6 @@ export const CameraScreen = ({ route, navigation }) => {
     }
   };
 
-  const handleFocusTap = async (event) => {
-    const { x, y } = event.nativeEvent;
-    console.log("native event x y %d %d", x, y)
-    // camera.current?.focus({ x, y }); // Only works in v3.x
-    try {
-      await camera.current.focus({ x: x, y: y });
-      console.log('Focus call sent');
-    } catch (e) {
-      console.warn('Focus failed:', e);
-    }
-  };
 
   const screenRatio = height / width;
   const cameraRatio = 16 / 9; // You can adjust this depending on your needs
@@ -1295,10 +1488,10 @@ export const CameraScreen = ({ route, navigation }) => {
       <GestureHandlerRootView style={{ flex: 1 }}>
 
         <View style={styles.cameraContainer}>
-          <TapGestureHandler onHandlerStateChange={handleFocusTap}>
+          <GestureDetector gesture={composedGesture}>
             <View style={StyleSheet.absoluteFill}>
 
-              <Camera
+              <ReanimatedCamera
                 ref={camera}
                 onError={onError}
                 // format={format}
@@ -1320,6 +1513,7 @@ export const CameraScreen = ({ route, navigation }) => {
                 // resizeMode={'contain'}
                 torch={flash === 'on' ? 'on' : 'off'}
                 focusable={true}
+                animatedProps={animatedProps}
                 // onInitialized={async () => {
                 //   console.log('Camera ready');
                 //   try {
@@ -1332,7 +1526,7 @@ export const CameraScreen = ({ route, navigation }) => {
               />
             </View>
 
-          </TapGestureHandler>
+          </GestureDetector>
 
           <View
             style={{
@@ -1351,6 +1545,181 @@ export const CameraScreen = ({ route, navigation }) => {
                 color={flash === 'off' ? 'gray' : 'gold'}
                 solid
               />
+            </TouchableOpacity>
+          </View>
+
+
+          {/* Zoom Slider UI */}
+          <View
+            style={{
+              position: "absolute",
+              right: 20,
+              top: height * 0.3,
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            {/* Plus Button (Zoom In) - Top */}
+            <TouchableOpacity
+              onPress={handleZoomIn}
+              style={{
+                width: 30,
+                height: 30,
+                alignItems: "center",
+                justifyContent: "center",
+                marginBottom: 10,
+              }}
+            >
+              <Text
+                style={{
+                  color: "white",
+                  fontSize: 24,
+                  fontWeight: "300",
+                }}
+              >
+                +
+              </Text>
+            </TouchableOpacity>
+
+            {/* Slider Track Container */}
+            <GestureDetector gesture={sliderPanGesture}>
+              <View
+                ref={sliderTrackRef}
+                onLayout={(event) => {
+                  const { y, height } = event.nativeEvent.layout;
+                  setSliderTrackLayout({ y, height });
+                }}
+                style={{
+                  width: 40,
+                  height: 200,
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  paddingVertical: 10,
+                  position: "relative",
+                }}
+              >
+                {/* Dotted Track */}
+                <View
+                  style={{
+                    position: "absolute",
+                    width: 2,
+                    height: 180,
+                    top: 10,
+                    left: 19, // Center the line (40px width / 2 - 1px)
+                  }}
+                >
+                  {Array.from({ length: 20 }).map((_, index) => (
+                    <View
+                      key={index}
+                      style={{
+                        position: "absolute",
+                        top: (index * 180) / 19, // Evenly space dots
+                        left: 0,
+                        width: 2,
+                        height: 2,
+                        borderRadius: 1,
+                        backgroundColor: "rgba(255, 255, 255, 0.5)",
+                      }}
+                    />
+                  ))}
+                </View>
+
+                {/* Start Marker (Min Zoom) */}
+                <View
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: 4,
+                    borderWidth: 1,
+                    borderColor: "white",
+                    backgroundColor: "transparent",
+                  }}
+                />
+
+                {/* Animated Slider Indicator */}
+                <Reanimated.View
+                  style={[
+                    {
+                      position: "absolute",
+                      width: 12,
+                      height: 12,
+                      borderRadius: 6,
+                      backgroundColor: "white",
+                      shadowColor: "white",
+                      shadowOffset: { width: 0, height: 0 },
+                      shadowOpacity: 0.8,
+                      shadowRadius: 4,
+                      elevation: 5,
+                    },
+                    sliderIndicatorStyle,
+                  ]}
+                />
+
+                {/* Center Marker (1x default zoom) */}
+                <View
+                  style={{
+                    position: "absolute",
+                    top: 10 + 90 - 3, // Center of slider (180/2 = 90) minus half marker height
+                    right: -4,
+                    width: 6,
+                    height: 6,
+                    borderRadius: 3,
+                    borderWidth: 1,
+                    borderColor: "white",
+                    backgroundColor: "transparent",
+                  }}
+                >
+                  <View
+                    style={{
+                      position: "absolute",
+                      top: -3,
+                      right: 2,
+                      width: 0,
+                      height: 0,
+                      borderLeftWidth: 3,
+                      borderRightWidth: 3,
+                      borderBottomWidth: 3,
+                      borderLeftColor: "transparent",
+                      borderRightColor: "transparent",
+                      borderBottomColor: "white",
+                    }}
+                  />
+                </View>
+
+                {/* End Marker (Max Zoom) */}
+                <View
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: 4,
+                    borderWidth: 1,
+                    borderColor: "white",
+                    backgroundColor: "transparent",
+                  }}
+                />
+              </View>
+            </GestureDetector>
+
+            {/* Minus Button (Zoom Out) - Bottom */}
+            <TouchableOpacity
+              onPress={handleZoomOut}
+              style={{
+                width: 30,
+                height: 30,
+                alignItems: "center",
+                justifyContent: "center",
+                marginTop: 10,
+              }}
+            >
+              <Text
+                style={{
+                  color: "white",
+                  fontSize: 24,
+                  fontWeight: "300",
+                }}
+              >
+                −
+              </Text>
             </TouchableOpacity>
           </View>
 

@@ -87,22 +87,23 @@ android {
     }
     
     signingConfigs {
-
-          release {
-            if (project.hasProperty('MYAPP_UPLOAD_STORE_FILE')) {
-                storeFile file(MYAPP_UPLOAD_STORE_FILE)
-                storePassword MYAPP_UPLOAD_STORE_PASSWORD
-                keyAlias MYAPP_UPLOAD_KEY_ALIAS
-                keyPassword MYAPP_UPLOAD_KEY_PASSWORD
-            }
-        }
-
-        
         release {
-            storeFile file('solarvest.keystore')
-            storePassword 'SV890432'
-            keyAlias 'solarvest'
-            keyPassword 'SV890432'
+            // Read from gradle.properties or environment variables
+            // These should be set from .env file (see SETUP_INSTRUCTIONS.md)
+            def keystorePassword = project.findProperty('MYAPP_UPLOAD_STORE_PASSWORD') ?: System.getenv('ANDROID_KEYSTORE_PASSWORD')
+            def keyPassword = project.findProperty('MYAPP_UPLOAD_KEY_PASSWORD') ?: System.getenv('ANDROID_KEY_PASSWORD')
+            def keyAlias = project.findProperty('MYAPP_UPLOAD_KEY_ALIAS') ?: System.getenv('ANDROID_KEY_ALIAS') ?: 'solarvest'
+            def keystoreFile = project.findProperty('MYAPP_UPLOAD_STORE_FILE') ?: 'solarvest.keystore'
+            
+            if (keystorePassword && keyPassword) {
+                storeFile file(keystoreFile)
+                storePassword keystorePassword
+                keyAlias keyAlias
+                keyPassword keyPassword
+            } else {
+                // Fallback for debug builds - will use debug signing
+                println "Warning: Keystore credentials not found. Using debug signing."
+            }
         }
     }
     buildTypes {
