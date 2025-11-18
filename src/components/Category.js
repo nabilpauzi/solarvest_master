@@ -1247,9 +1247,9 @@ export const CameraScreen = ({ route, navigation }) => {
   const pinchGesture = React.useMemo(() => {
     if (!device) return Gesture.Pinch();
     
-    // Use device's actual zoom range (minZoom to maxZoom, capped at 3x)
+    // Use device's actual zoom range (minZoom to maxZoom, capped at 4x)
     const deviceMinZoom = device.minZoom ?? 1;
-    const deviceMaxZoom = Math.min(device.maxZoom ?? 3, 3);
+    const deviceMaxZoom = Math.min(device.maxZoom ?? 4, 4);
     
     return Gesture.Pinch()
       .onBegin(() => {
@@ -1257,7 +1257,7 @@ export const CameraScreen = ({ route, navigation }) => {
       })
       .onUpdate((event) => {
         const z = zoomOffset.value * event.scale;
-        // Clamp zoom between device's minZoom and maxZoom (capped at 3x)
+        // Clamp zoom between device's minZoom and maxZoom (capped at 4x)
         zoom.value = Math.max(deviceMinZoom, Math.min(deviceMaxZoom, z));
       });
   }, [device]);
