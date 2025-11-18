@@ -1,4 +1,4 @@
-export const categories = [
+export const defaultCategories = [
   { amount: 1, name: "Map Overview", icon: "map" },
   { amount: 14, name: "Roofs", icon: "house-chimney" },
   { amount: 14, name: "Inverter Location", icon: "solar-panel" },
@@ -15,10 +15,27 @@ export const categories = [
   // { amount: 2, name: "Drone Footage", icon: "helicopter" },
 ];
 
+// Export categories for backward compatibility (will use defaults)
+export const categories = defaultCategories;
+
 export const subCategories = [
   { name: "Installtion Location" },
   { name: "Tapping Point Location" },
 ];
 
+/**
+ * Get categories with custom names applied
+ * This function should be called from components that need dynamic category names
+ */
+export const getCategoriesWithCustomNames = async () => {
+  const { getCustomCategoryNames } = await import("../utils/categoryUtils");
+  const customNames = await getCustomCategoryNames();
+  
+  return defaultCategories.map((category) => ({
+    ...category,
+    name: customNames[category.name] || category.name,
+    originalName: category.name, // Keep original name for reference
+  }));
+};
 
   //  android:roundIcon="@mipmap/ic_launcher_round"

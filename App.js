@@ -82,7 +82,8 @@ import { LogBox } from "react-native";
 
 import shareFile, { saveToDownloads } from "./src/utils/shareUtils.js";
 
-import { categories } from "./src/const/data.js";
+import { categories, defaultCategories, getCategoriesWithCustomNames } from "./src/const/data.js";
+import { getCustomCategoryNames } from "./src/utils/categoryUtils.js";
 
 import { generateUniqueId } from "./src/utils/commonUtils.js";
 
@@ -340,10 +341,38 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
   const { project } = route.params;
   const [shouldNavigate, setShouldNavigate] = useState(false);
   const [tempHolder, setTempHolder] = useState("");
+  const [displayCategories, setDisplayCategories] = useState(defaultCategories);
 
-  const goCategory = (name) => {
-    setCategoryName(name);
-    setTempHolder(name);
+  // Load categories with custom names and refresh data
+  useFocusEffect(
+    React.useCallback(() => {
+      const loadCategories = async () => {
+        try {
+          const customNames = await getCustomCategoryNames();
+          const updatedCategories = defaultCategories.map((cat) => ({
+            ...cat,
+            name: customNames[cat.name] || cat.name,
+            originalName: cat.name, // Keep original for data matching
+          }));
+          setDisplayCategories(updatedCategories);
+          // Refresh project data with updated categories
+          const storedDataJSON = await AsyncStorage.getItem("imageCategory");
+          const storedData = storedDataJSON ? JSON.parse(storedDataJSON) : [];
+          setProjectData(formatData(storedData, project, updatedCategories));
+        } catch (error) {
+          console.error("Error loading categories:", error);
+          setDisplayCategories(defaultCategories);
+        }
+      };
+      loadCategories();
+    }, [project])
+  );
+
+  const goCategory = (displayName, originalName) => {
+    // Use display name for navigation, but keep original for data matching
+    const nameToUse = displayName;
+    setCategoryName(nameToUse);
+    setTempHolder(nameToUse);
     setShouldNavigate(true);
   };
 
@@ -351,10 +380,15 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
     const navigateAsync = async () => {
       if (shouldNavigate) {
         await new Promise((resolve) => setTimeout(resolve, 100));
+        // Find the category by display name to get the amount
+        const category = displayCategories.find((item) => item.name === tempHolder) ||
+                        defaultCategories.find((item) => item.name === tempHolder);
+        const amount = category ? category.amount : 1;
+        
         navigation.navigate(tempHolder, {
           project: project,
           category: tempHolder,
-          amount: categories.find((item) => item.name === tempHolder).amount,
+          amount: amount,
           categoryId: null,
         });
         setShouldNavigate(false);
@@ -497,7 +531,7 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
 
   const [projectData, setProjectData] = useState([]);
 
-  const formatData = (storedData, project) => {
+  const formatData = (storedData, project, categoriesToUse = displayCategories) => {
     const filteredData = storedData.filter(
       (item) => item.project === project && item.opt != "delete"
     );
@@ -521,11 +555,13 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
       return acc;
     }, {});
 
-    return categories
-      .map(({ name }) => {
-        const categoryData = sections[name] || {};
+    return categoriesToUse
+      .map(({ name, originalName }) => {
+        // Try to find data by original name first, then by display name
+        const originalNameToUse = originalName || name;
+        const categoryData = sections[originalNameToUse] || sections[name] || {};
         return {
-          title: name,
+          title: name, // Use display name for title
           data: Object.entries(categoryData).map(([categoryId, items]) => ({
             title: `No. ${categoryId}`,
             data: items.map((item, index) => {
@@ -566,7 +602,7 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
       const storedDataJSON = await AsyncStorage.getItem("imageCategory");
       const storedData = storedDataJSON ? JSON.parse(storedDataJSON) : [];
 
-      setProjectData(formatData(storedData, project));
+      setProjectData(formatData(storedData, project, displayCategories));
     } catch (error) {
       console.log(error);
     }
@@ -581,17 +617,13 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
 
       await AsyncStorage.setItem("imageCategory", JSON.stringify(storedData));
 
-      setProjectData(formatData(storedData, project));
+      setProjectData(formatData(storedData, project, displayCategories));
     } catch (error) {
       console.error("Error swapping picture items:", error);
     }
   };
 
-  useFocusEffect(
-    React.useCallback(() => {
-      tempFetch();
-    }, [])
-  );
+  // Data loading is now handled in the category loading useFocusEffect above
 
   const [expandedSections, setExpandedSections] = useState({});
   const toggleSection = (sectionTitle) => {
@@ -604,11 +636,11 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
   return (
     <ScrollView contentContainerStyle={{ padding: 20, rowGap: 15 }}>
       <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
-        {categories.map((item) => (
+        {displayCategories.map((item) => (
           <TouchableOpacity
-            key={item.name}
+            key={item.originalName || item.name}
             style={{ width: "50%" }}
-            onPress={() => goCategory(item.name)}
+            onPress={() => goCategory(item.name, item.originalName || item.name)}
           >
             <View style={styles.itemContainer}>
               <Icon name={item.icon} size={20} color="#8829A0" />

@@ -17,8 +17,17 @@ import {
   TouchableOpacity,
   ScrollView,
   Switch,
+  FlatList,
 } from "react-native";
 import axios from "axios";
+import { defaultCategories } from "../const/data";
+import {
+  getCustomCategoryNames,
+  updateCategoryName,
+  resetCategoryNames,
+} from "../utils/categoryUtils";
+import { useFocusEffect } from "@react-navigation/native";
+import Icon from "react-native-vector-icons/FontAwesome6";
 
 
 export const Settings = ({ navigation }) => {
@@ -29,6 +38,84 @@ export const Settings = ({ navigation }) => {
   const [tenantId, setTenantId] = useState();
   const [isEnabled, setIsEnabled] = useState(false);
   const toggleSwitch = () => setIsEnabled((previousState) => !previousState);
+
+  // Category name editing state
+  const [categoryNames, setCategoryNames] = useState({});
+  const [editingCategory, setEditingCategory] = useState(null);
+  const [showCategoryEditor, setShowCategoryEditor] = useState(false);
+
+  // Load category names when screen is focused
+  useFocusEffect(
+    useCallback(() => {
+      loadCategoryNames();
+    }, [])
+  );
+
+  const loadCategoryNames = async () => {
+    try {
+      const customNames = await getCustomCategoryNames();
+      // Initialize with default names, then override with custom names
+      const initialNames = {};
+      defaultCategories.forEach((cat) => {
+        initialNames[cat.name] = customNames[cat.name] || cat.name;
+      });
+      setCategoryNames(initialNames);
+    } catch (error) {
+      console.error("Error loading category names:", error);
+    }
+  };
+
+  const handleCategoryNameChange = (originalName, newName) => {
+    setCategoryNames((prev) => ({
+      ...prev,
+      [originalName]: newName,
+    }));
+  };
+
+  const saveCategoryName = async (originalName) => {
+    try {
+      const newName = categoryNames[originalName];
+      const success = await updateCategoryName(originalName, newName);
+      if (success) {
+        Alert.alert("Success", "Category name saved successfully!");
+        setEditingCategory(null);
+        // Reload to ensure consistency
+        await loadCategoryNames();
+      } else {
+        Alert.alert("Error", "Failed to save category name");
+      }
+    } catch (error) {
+      console.error("Error saving category name:", error);
+      Alert.alert("Error", "Failed to save category name");
+    }
+  };
+
+  const resetAllCategoryNames = async () => {
+    Alert.alert(
+      "Reset Category Names",
+      "Are you sure you want to reset all category names to default?",
+      [
+        {
+          text: "Cancel",
+          style: "cancel",
+        },
+        {
+          text: "Reset",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await resetCategoryNames();
+              await loadCategoryNames();
+              Alert.alert("Success", "All category names have been reset to default");
+            } catch (error) {
+              console.error("Error resetting category names:", error);
+              Alert.alert("Error", "Failed to reset category names");
+            }
+          },
+        },
+      ]
+    );
+  };
 
   const logout = () => {
     Alert.alert(
@@ -90,12 +177,114 @@ export const Settings = ({ navigation }) => {
   return (
     <ScrollView
       contentContainerStyle={{
-        flex: 1,
         padding: 20,
         flexDirection: "column",
         rowGap: 20,
       }}
     >
+      {/* Category Name Editor Section */}
+      <View style={{ rowGap: 10 }}>
+        <View
+          style={{
+            flexDirection: "row",
+            justifyContent: "space-between",
+            alignItems: "center",
+          }}
+        >
+          <Text style={styles.title}>Category Names</Text>
+          <TouchableOpacity
+            onPress={() => setShowCategoryEditor(!showCategoryEditor)}
+            style={{
+              padding: 8,
+              borderRadius: 5,
+              backgroundColor: "#8829A0",
+            }}
+          >
+            <Icon
+              name={showCategoryEditor ? "chevron-up" : "chevron-down"}
+              size={20}
+              color="#fff"
+            />
+          </TouchableOpacity>
+        </View>
+
+        {showCategoryEditor && (
+          <View>
+            <FlatList
+              data={defaultCategories}
+              keyExtractor={(item) => item.name}
+              style={{ maxHeight: 500 }}
+              contentContainerStyle={{ rowGap: 15, paddingBottom: 10 }}
+              scrollEnabled={true}
+              nestedScrollEnabled={true}
+              showsVerticalScrollIndicator={true}
+              renderItem={({ item: category }) => (
+                <View style={{ rowGap: 5 }}>
+                  <Text style={styles.labelText}>
+                    {category.name} {category.icon && `(${category.icon})`}
+                  </Text>
+                  <View style={{ flexDirection: "row", columnGap: 10 }}>
+                    <TextInput
+                      style={[
+                        styles.inputContainer,
+                        { flex: 1 },
+                        editingCategory === category.name && {
+                          borderColor: "#8829A0",
+                          borderWidth: 2,
+                        },
+                      ]}
+                      placeholder="Enter custom name"
+                      placeholderTextColor="#4b4b4b"
+                      value={categoryNames[category.name] || ""}
+                      onChangeText={(text) =>
+                        handleCategoryNameChange(category.name, text)
+                      }
+                      onFocus={() => setEditingCategory(category.name)}
+                      editable={true}
+                    />
+                    {editingCategory === category.name && (
+                      <TouchableOpacity
+                        onPress={() => saveCategoryName(category.name)}
+                        style={{
+                          backgroundColor: "#8829A0",
+                          padding: 10,
+                          borderRadius: 5,
+                          justifyContent: "center",
+                          alignItems: "center",
+                          minWidth: 60,
+                        }}
+                      >
+                        <Icon name="check" size={20} color="#fff" />
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                </View>
+              )}
+              ListFooterComponent={
+                <View style={{ marginTop: 10 }}>
+                  <Button
+                    title="Reset All to Default"
+                    onPress={resetAllCategoryNames}
+                    color="#ff6b6b"
+                  />
+                  <Text
+                    style={{
+                      fontSize: 12,
+                      color: "#666",
+                      fontStyle: "italic",
+                      marginTop: 10,
+                    }}
+                  >
+                    Note: Changes will take effect after restarting the app or
+                    navigating away and back.
+                  </Text>
+                </View>
+              }
+            />
+          </View>
+        )}
+      </View>
+
       {/* <View style={{ rowGap: 10 }}>
                 <Text style={styles.title}>Sharepoint Feature Login</Text>
                 <View style={styles.textInputView}>
