@@ -1,5 +1,5 @@
 diff --git a/node_modules/@baronha/react-native-photo-editor/ios/ZLImageEditor/Sources/General/ZLEditImageViewController.swift b/node_modules/@baronha/react-native-photo-editor/ios/ZLImageEditor/Sources/General/ZLEditImageViewController.swift
-index 4b8b443..b7ba4db 100644
+index 4b8b443..b79167e 100644
 --- a/node_modules/@baronha/react-native-photo-editor/ios/ZLImageEditor/Sources/General/ZLEditImageViewController.swift
 +++ b/node_modules/@baronha/react-native-photo-editor/ios/ZLImageEditor/Sources/General/ZLEditImageViewController.swift
 @@ -146,6 +146,10 @@ public class ZLEditImageViewController: UIViewController {
@@ -35,98 +35,59 @@ index 4b8b443..b7ba4db 100644
                  
                  let originalRatio = min(self.scrollView.frame.width / self.originalImage.size.width, self.scrollView.frame.height / self.originalImage.size.height)
                  let ratio = min(self.scrollView.frame.width / self.editRect.width, self.scrollView.frame.height / self.editRect.height)
-@@ -760,10 +771,90 @@ public class ZLEditImageViewController: UIViewController {
+@@ -760,10 +771,51 @@ public class ZLEditImageViewController: UIViewController {
                  let path = ZLDrawPath(pathColor: self.currentDrawColor, pathWidth: self.drawLineWidth / self.scrollView.zoomScale, ratio: ratio / originalRatio / toImageScale, startPoint: point)
                  self.drawPaths.append(path)
              } else if pan.state == .changed {
-+                // Normal drawing - no real-time straightening
++                // Normal drawing - no real-time straightening while moving
                  let path = self.drawPaths.last
                  path?.addLine(to: point)
                  self.drawLine()
              } else if pan.state == .cancelled || pan.state == .ended {
-+                // Schedule delayed straightening after 1.5 seconds
++                // On end: detect starting and ending points and draw a straight line between them
 +                if let startPoint = self.drawStartPoint, let path = self.drawPaths.last {
 +                    let finalPoint = point
-+                    
-+                    // Cancel any existing timer
++
++                    // Cancel any existing timer (if any)
 +                    self.straightenTimer?.invalidate()
-+                    
-+                    // Create timer for delayed straightening (1.5 seconds)
-+                    self.straightenTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { [weak self] _ in
-+                        guard let self = self, let path = self.drawPaths.last else { return }
-+                        
-+                        let dx = finalPoint.x - startPoint.x
-+                        let dy = finalPoint.y - startPoint.y
-+                        let distance = sqrt(dx * dx + dy * dy)
-+                        
-+                        // Straighten ALL lines (minimum 2 points to avoid errors)
-+                        if distance > 2 {
-+                            // Calculate angle in radians
-+                            let angleRad = atan2(dy, dx)
-+                            // Convert to degrees
-+                            var angleDeg = angleRad * 180.0 / .pi
-+                            // Normalize to 0-360
-+                            if angleDeg < 0 {
-+                                angleDeg += 360.0
-+                            }
-+                            
-+                            // Define major angles: 0°, 45°, 90°, 135°, 180°, 225°, 270°, 315°
-+                            let majorAngles: [CGFloat] = [0, 45, 90, 135, 180, 225, 270, 315]
-+                            
-+                            // Find nearest major angle (handle wrap-around)
-+                            var nearestAngle = majorAngles[0]
-+                            var minDiff = min(abs(angleDeg - majorAngles[0]), 360 - abs(angleDeg - majorAngles[0]))
-+                            for majorAngle in majorAngles {
-+                                let diff = min(abs(angleDeg - majorAngle), 360 - abs(angleDeg - majorAngle))
-+                                if diff < minDiff {
-+                                    minDiff = diff
-+                                    nearestAngle = majorAngle
-+                                }
-+                            }
-+                            
-+                            // Always straighten - remove angle threshold
-+                            // Convert back to radians
-+                            let snappedAngleRad = nearestAngle * .pi / 180.0
-+                            
-+                            // Calculate end point based on snapped angle and original distance
-+                            let endPoint = CGPoint(
-+                                x: startPoint.x + cos(snappedAngleRad) * distance,
-+                                y: startPoint.y + sin(snappedAngleRad) * distance
-+                            )
-+                            
-+                            // Reset path to start point and add straight line to snapped end point
-+                            let pathRatio = path.ratio
-+                            path.path.removeAllPoints()
-+                            let scaledStartPoint = CGPoint(x: startPoint.x / pathRatio, y: startPoint.y / pathRatio)
-+                            let scaledEndPoint = CGPoint(x: endPoint.x / pathRatio, y: endPoint.y / pathRatio)
-+                            path.path.move(to: scaledStartPoint)
-+                            path.path.addLine(to: scaledEndPoint)
-+                            
-+                            // Add arrowhead at the end of the line
-+                            // Calculate arrowhead size based on line width (increased size)
-+                            let lineWidth = path.path.lineWidth
-+                            let arrowLength = max(25, lineWidth * 5) // Arrow length proportional to line width (increased)
-+                            let arrowWidth = max(18, lineWidth * 3.5) // Arrow width proportional to line width (increased)
-+                            
-+                            path.addArrowhead(at: scaledEndPoint, angle: snappedAngleRad, arrowLength: arrowLength, arrowWidth: arrowWidth)
-+                            path.shapeLayer.path = path.path.cgPath
-+                            
-+                            self.drawLine()
-+                        }
-+                    }
-+                    
-+                    // Add timer to main run loop to ensure it fires
-+                    if let timer = self.straightenTimer {
-+                        RunLoop.main.add(timer, forMode: .common)
++                    self.straightenTimer = nil
++
++                    // Detect starting point and ending point
++                    let dx = finalPoint.x - startPoint.x
++                    let dy = finalPoint.y - startPoint.y
++                    let distance = sqrt(dx * dx + dy * dy)
++
++                    // Only draw if the line has a reasonable length
++                    if distance > 2 {
++                        let angleRad = atan2(dy, dx)
++                        let pathRatio = path.ratio
++
++                        // Scale coordinates for path so that we respect internal ratio
++                        path.path.removeAllPoints()
++                        let scaledStartPoint = CGPoint(x: startPoint.x / pathRatio, y: startPoint.y / pathRatio)
++                        let scaledEndPoint = CGPoint(x: finalPoint.x / pathRatio, y: finalPoint.y / pathRatio)
++
++                        // Draw straight line between exact starting and ending points
++                        path.path.move(to: scaledStartPoint)
++                        path.path.addLine(to: scaledEndPoint)
++
++                        // Optional arrowhead at the exact end point (keeps existing arrow behaviour)
++                        let lineWidth = path.path.lineWidth
++                        let arrowLength = max(25, lineWidth * 5)
++                        let arrowWidth = max(18, lineWidth * 3.5)
++                        path.addArrowhead(at: scaledEndPoint, angle: angleRad, arrowLength: arrowLength, arrowWidth: arrowWidth)
++
++                        path.shapeLayer.path = path.path.cgPath
++                        self.drawLine()
 +                    }
 +                }
-+                
++
 +                // Reset start point
 +                self.drawStartPoint = nil
                  self.setToolView(show: true)
                  self.revokeBtn.isEnabled = self.drawPaths.count > 0
              }
-@@ -1457,7 +1548,51 @@ public class ZLDrawPath: NSObject {
+@@ -1457,7 +1509,51 @@ public class ZLDrawPath: NSObject {
      
      func drawPath() {
          self.pathColor.set()
