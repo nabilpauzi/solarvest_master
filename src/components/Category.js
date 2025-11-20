@@ -396,26 +396,17 @@ export const CategoryScreen = ({ route, navigation }) => {
     if (result) {
       const storedDataJSON = await AsyncStorage.getItem("imageCategory");
       const storedData = JSON.parse(storedDataJSON);
-      let itemExist = false;
 
       for (let i = 0; i < storedData.length; i++) {
         // If object with desired name is found
         if (storedData[i].id === itemId) {
-          // storedData[i].picture = result;
-          const newItem = {
-            id: generateUniqueId(),
-            project: storedData[i].project,
-            category: storedData[i].category,
-            categoryId: storedData[i].categoryId,
-            picture: result,
-            description: storedData[i].description,
-            opt: "create",
-          };
+          // Replace the original image with the edited one
+          const originalItem = storedData[i];
+          storedData[i].picture = result;
+          storedData[i].opt = storedData[i].opt || "create"; // Keep existing opt or set to "create"
 
           //*********Local Storage upload edited picture ********/
-          storedData.splice(i + 1, 0, newItem);
           try {
-            //when Item exist in AsyncStorage
             await AsyncStorage.setItem(
               "imageCategory",
               JSON.stringify(storedData)
@@ -424,20 +415,20 @@ export const CategoryScreen = ({ route, navigation }) => {
           } catch (error) {
             console.log("Error in storing the edited data: ", error);
           }
+          
           //*********Sharepoint Upload Edited Picture ********/
-          const folderUri = `${newItem.project}/${newItem.category}/${newItem.categoryId}`;
-          const imgName = `${newItem.id}_${newItem.project}_${newItem.category}_${newItem.categoryId}_${newItem.description}.jpg`;
+          const folderUri = `${originalItem.project}/${originalItem.category}/${originalItem.categoryId}`;
+          const imgName = `${originalItem.id}_${originalItem.project}_${originalItem.category}_${originalItem.categoryId}_${originalItem.description}.jpg`;
           try {
             await uploadImageSharepoint(
-              newItem.picture,
+              result,
               imgName,
               folderUri,
-              newItem.id
+              originalItem.id
             );
           } catch (error) {
             console.log("Error Uploading Edited Img Sharepoint" + error);
           }
-          itemExist = true;
           break;
         }
       }
@@ -803,13 +794,20 @@ export const CategoryScreen = ({ route, navigation }) => {
       opt: "create",
     };
 
-    index == null
-      ? setImageSections([...imageSections, newSection])
-      : setImageSections((prevSections) => {
-          const updatedSections = [...prevSections];
-          updatedSections.splice(index + 1, 0, newSection);
-          return updatedSections;
-        });
+    if (index == null) {
+      // Adding a new image section
+      setImageSections([...imageSections, newSection]);
+    } else {
+      // Replacing the image at the specified index (for editing)
+      setImageSections((prevSections) => {
+        const updatedSections = [...prevSections];
+        updatedSections[index] = {
+          ...updatedSections[index],
+          picture: imgUri,
+        };
+        return updatedSections;
+      });
+    }
   };
 
   const isFocused = useIsFocused();
@@ -1194,62 +1192,50 @@ export const CameraScreen = ({ route, navigation }) => {
     console.error("Camera Error:", error);
   }, []);
 
-  // Focus handler - must be defined before gestures
+  // Focus handler
   const handleFocusTap = useCallback(async (event) => {
     const { x, y } = event.nativeEvent;
-    console.log("native event x y %d %d", x, y);
     try {
       if (camera.current) {
         await camera.current.focus({ x: x, y: y });
-        console.log('Focus call sent');
       }
     } catch (e) {
       console.warn('Focus failed:', e);
     }
   }, []);
 
-  // Zoom functionality - initialize to 1.5x camera zoom (displays as 1x in UI)
-  const zoom = useSharedValue(1.5);
+  // Zoom functionality - use actual zoom values (0.5x = 0.5x, 1x = 1x)
+  // Check if device has wide lens (minZoom < 1 indicates wide/ultra-wide lens support)
+  const zoom = useSharedValue(1.0);
   const zoomOffset = useSharedValue(0); // For pinch gesture tracking
 
-  // Zoom range with offset mapping:
-  // UI displays: 0.5x to 4x
-  // Camera actual: 1x to 4.5x (where 1.5x camera = 1x UI display)
-  // This allows "zoom out" UI effect even on devices that don't support < 1x hardware zoom
-  const uiMinZoom = 0.5; // UI minimum (displayed as 0.5x)
-  const uiMaxZoom = 4; // UI maximum (displayed as 4x)
-  const uiDefaultZoom = 1; // UI default (displayed as 1x, but camera will be 1.5x)
+  // Check if device has wide lens support (iOS devices with wide/ultra-wide lens)
+  // If device.minZoom < 1, it means the device can zoom out below 1x (typically 0.5x on iOS)
+  const hasWideLens = device && device.minZoom !== undefined && device.minZoom < 1;
   
-  const cameraMinZoom = 1; // Camera actual minimum (hardware limit)
-  const cameraMaxZoom = 4.5; // Camera actual maximum
-  const cameraDefaultZoom = 1.5; // Camera actual default (displayed as 1x in UI)
-  
-  // Offset: UI zoom + 0.5 = Camera zoom (so UI 0.5x = Camera 1x, UI 1x = Camera 1.5x)
-  const zoomOffsetValue = 0.5;
+  // Get the actual minimum zoom value - memoized to use actual device.minZoom (typically 0.5x on iOS)
+  // On iOS with wide lens: device.minZoom is typically 0.5
+  // On devices without wide lens: use 1.0 as minimum
+  const deviceMinZoom = React.useMemo(() => {
+    if (!device) return 1.0;
+    if (hasWideLens && device.minZoom !== undefined) {
+      return device.minZoom; // Use actual device minZoom (typically 0.5x on iOS)
+    }
+    return 1.0;
+  }, [device, hasWideLens]);
 
-  // Initialize zoom to cameraDefaultZoom (1.5x) when device is available
-  // This will be displayed as 1x in the UI
+  // Initialize zoom to 1x when device is available
   useEffect(() => {
     if (device) {
-      console.log('Camera Device Zoom Capabilities:', {
-        minZoom: device.minZoom,
-        maxZoom: device.maxZoom,
-        neutralZoom: device.neutralZoom,
-        supportsZoomOut: device.minZoom < 1,
-        cameraDefaultZoom: cameraDefaultZoom,
-        uiDisplayZoom: uiDefaultZoom,
-      });
-      zoom.value = cameraDefaultZoom; // Set camera to 1.5x (displays as 1x in UI)
+      zoom.value = 1.0;
     }
-  }, [device, cameraDefaultZoom]);
+  }, [device]);
 
-  // Pinch gesture for zoom - recreate when device changes
+  // Pinch gesture for zoom
   const pinchGesture = React.useMemo(() => {
     if (!device) return Gesture.Pinch();
     
-    // Use device's actual zoom range (minZoom to maxZoom, capped at 4x)
-    const deviceMinZoom = device.minZoom ?? 1;
-    const deviceMaxZoom = Math.min(device.maxZoom ?? 4, 4);
+    const deviceMaxZoom = device.maxZoom ? Math.min(device.maxZoom, 4) : 4;
     
     return Gesture.Pinch()
       .onBegin(() => {
@@ -1257,10 +1243,10 @@ export const CameraScreen = ({ route, navigation }) => {
       })
       .onUpdate((event) => {
         const z = zoomOffset.value * event.scale;
-        // Clamp zoom between device's minZoom and maxZoom (capped at 4x)
+        // Ensure we can zoom to 0.5x on iOS devices with wide lens
         zoom.value = Math.max(deviceMinZoom, Math.min(deviceMaxZoom, z));
       });
-  }, [device]);
+  }, [device, deviceMinZoom]);
 
   // Tap gesture for focus
   const tapGesture = React.useMemo(() => {
@@ -1283,111 +1269,71 @@ export const CameraScreen = ({ route, navigation }) => {
   }), [zoom]);
 
 
-  // Zoom control handlers - work with camera zoom values (1x to 3.5x)
+  // Zoom control handlers
   const handleZoomIn = useCallback(() => {
     if (!device) return;
+    
     const currentZoom = zoom.value;
-    const newZoom = Math.min(cameraMaxZoom, currentZoom + 0.5);
+    const deviceMaxZoom = device.maxZoom ? Math.min(device.maxZoom, 4) : 4;
+    
+    if (deviceMaxZoom <= currentZoom) return;
+    
+    const newZoom = Math.min(deviceMaxZoom, currentZoom + 0.5);
     zoom.value = withSpring(newZoom, {
       damping: 15,
       stiffness: 150,
     });
-  }, [device, zoom, cameraMaxZoom]);
+  }, [device, zoom]);
 
   const handleZoomOut = useCallback(() => {
     if (!device) return;
     const currentZoom = zoom.value;
-    const newZoom = Math.max(cameraMinZoom, currentZoom - 0.5);
+    const newZoom = Math.max(deviceMinZoom, currentZoom - 0.5);
     zoom.value = withSpring(newZoom, {
       damping: 15,
       stiffness: 150,
     });
-  }, [device, zoom, cameraMinZoom]);
+  }, [device, zoom, deviceMinZoom]);
 
-  // Pan gesture for slider - improved coordinate handling
-  // Maps slider position to camera zoom: bottom=cameraMinZoom(1x), center=cameraDefaultZoom(1.5x), top=cameraMaxZoom(3.5x)
-  // UI displays: bottom=0.5x, center=1x, top=3x
-  // Uses non-linear mapping: bottom 50% = cameraMinZoom-cameraDefaultZoom, top 50% = cameraDefaultZoom-cameraMaxZoom
+  // Pan gesture for slider
   const sliderPanGesture = React.useMemo(() => {
     if (!device) return Gesture.Pan();
     
     return Gesture.Pan()
       .onUpdate((event) => {
-        // event.y is relative to the gesture handler (slider track container)
-        // The container has paddingVertical: 10, so track starts at y=10
         const trackStart = 10;
-        const sliderHeight = 180; // Actual track height (200 - 20 padding)
-        
-        // Get relative position within the track
+        const sliderHeight = 180;
         const relativeY = event.y - trackStart;
-        
-        // Clamp to track bounds (0 to sliderHeight)
         const clampedY = Math.max(0, Math.min(sliderHeight, relativeY));
-        
-        // Calculate slider progress (inverted: 0 at bottom, 1 at top)
         const sliderProgress = 1 - (clampedY / sliderHeight);
         
-        // Non-linear mapping: 
-        // - Bottom 50% of slider (sliderProgress 0-0.5) maps to cameraMinZoom-cameraDefaultZoom (1x-1.5x)
-        // - Top 50% of slider (sliderProgress 0.5-1) maps to cameraDefaultZoom-cameraMaxZoom (1.5x-3.5x)
-        let newZoom;
-        if (sliderProgress <= 0.5) {
-          // Bottom half: map 0-0.5 slider progress to cameraMinZoom-cameraDefaultZoom
-          const bottomProgress = sliderProgress / 0.5; // Normalize to 0-1
-          newZoom = cameraMinZoom + (cameraDefaultZoom - cameraMinZoom) * bottomProgress;
-        } else {
-          // Top half: map 0.5-1 slider progress to cameraDefaultZoom-cameraMaxZoom
-          const topProgress = (sliderProgress - 0.5) / 0.5; // Normalize to 0-1
-          newZoom = cameraDefaultZoom + (cameraMaxZoom - cameraDefaultZoom) * topProgress;
-        }
+        const deviceMaxZoom = Math.min(device.maxZoom ?? 4, 4);
+        const newZoom = deviceMinZoom + (deviceMaxZoom - deviceMinZoom) * sliderProgress;
         
-        // Apply zoom with smooth update
         zoom.value = newZoom;
       });
-  }, [device, zoom, cameraMinZoom, cameraMaxZoom, cameraDefaultZoom]);
+  }, [device, zoom, deviceMinZoom]);
 
   // Animated style for slider indicator
-  // Maps camera zoom value to slider position: cameraMinZoom(1x)=bottom, cameraDefaultZoom(1.5x)=center, cameraMaxZoom(3.5x)=top
-  // Uses non-linear mapping: bottom 50% = cameraMinZoom-cameraDefaultZoom, top 50% = cameraDefaultZoom-cameraMaxZoom
   const sliderIndicatorStyle = useAnimatedStyle(() => {
     if (!device) {
-      return { top: 100 - 6 }; // Default center position
+      return { top: 100 - 6 };
     }
     
-    const sliderHeight = 180; // Track height
-    const trackStart = 10; // Top padding
-    
-    // Non-linear mapping to ensure cameraDefaultZoom (1.5x) is at center:
-    // - Bottom 50% of slider maps to cameraMinZoom-cameraDefaultZoom (1x-1.5x)
-    // - Top 50% of slider maps to cameraDefaultZoom-cameraMaxZoom (1.5x-3.5x)
-    let adjustedProgress;
-    if (zoom.value <= cameraDefaultZoom) {
-      // Bottom half: map cameraMinZoom-cameraDefaultZoom to 0%-50% of slider
-      const bottomRange = cameraDefaultZoom - cameraMinZoom;
-      if (bottomRange > 0) {
-        const bottomProgress = (zoom.value - cameraMinZoom) / bottomRange;
-        adjustedProgress = Math.max(0, Math.min(0.5, bottomProgress * 0.5));
-      } else {
-        adjustedProgress = 0.5; // If cameraMinZoom == cameraDefaultZoom, stay at center
-      }
-    } else {
-      // Top half: map cameraDefaultZoom-cameraMaxZoom to 50%-100% of slider
-      const topRange = cameraMaxZoom - cameraDefaultZoom;
-      if (topRange > 0) {
-        const topProgress = (zoom.value - cameraDefaultZoom) / topRange;
-        adjustedProgress = Math.max(0.5, Math.min(1, 0.5 + (topProgress * 0.5)));
-      } else {
-        adjustedProgress = 0.5; // If cameraMaxZoom == cameraDefaultZoom, stay at center
-      }
-    }
-    
-    // Inverted: top is max zoom, bottom is min zoom
-    const top = trackStart + sliderHeight * (1 - adjustedProgress);
+    const sliderHeight = 180;
+    const trackStart = 10;
+    const deviceMaxZoom = Math.min(device.maxZoom ?? 4, 4);
+    const zoomRange = deviceMaxZoom - deviceMinZoom;
+    const progress = zoomRange > 0 
+      ? (zoom.value - deviceMinZoom) / zoomRange 
+      : 0.5;
+    const clampedProgress = Math.max(0, Math.min(1, progress));
+    const top = trackStart + sliderHeight * (1 - clampedProgress);
     
     return {
-      top: top - 6, // Center the indicator (12px height / 2)
+      top: top - 6,
     };
-  }, [device, cameraMinZoom, cameraMaxZoom, cameraDefaultZoom]);
+  }, [device, zoom, deviceMinZoom]);
 
   // Function to capture a photo
   const takePhoto = async () => {
