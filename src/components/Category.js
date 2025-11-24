@@ -41,6 +41,7 @@ import Carousel from "react-native-reanimated-carousel";
 import {
   Camera,
   useCameraDevice,
+  useCameraDevices,
   useCameraFormat,
   useCameraPermission,
 } from "react-native-vision-camera";
@@ -1180,12 +1181,50 @@ export const CameraScreen = ({ route, navigation }) => {
     })();
   }, [hasPermission]);
 
-  // Camera device and reference
-  const device = useCameraDevice("back");
+  // Get all available back cameras
+  const allBackDevices = useCameraDevices('back');
+  
+  // Select the best device - prefer one with ultra-wide camera if available
+  const device = React.useMemo(() => {
+    if (!allBackDevices || allBackDevices.length === 0) {
+      return null;
+    }
+    
+    // Priority 1: Device with ultra-wide camera explicitly listed
+    const deviceWithUltraWide = allBackDevices.find(dev => 
+      (dev.physicalDevices || []).includes('ultra-wide-angle-camera')
+    );
+    
+    if (deviceWithUltraWide) {
+      return deviceWithUltraWide;
+    }
+    
+    // Priority 2: Device with neutralZoom > 1 (indicates ultra-wide support)
+    const deviceWithNeutralZoomGreaterThanOne = allBackDevices.find(dev => 
+      (dev.neutralZoom ?? 1) > 1
+    );
+    
+    if (deviceWithNeutralZoomGreaterThanOne) {
+      return deviceWithNeutralZoomGreaterThanOne;
+    }
+    
+    // Priority 3: Device with multiple physical cameras
+    const deviceWithMultipleCameras = allBackDevices.find(dev => 
+      (dev.physicalDevices || []).length > 1
+    );
+    
+    if (deviceWithMultipleCameras) {
+      return deviceWithMultipleCameras;
+    }
+    
+    // Fallback to first available device
+    return allBackDevices[0];
+  }, [allBackDevices]);
+  
   const camera = useRef(null);
   const sliderTrackRef = useRef(null);
   const [sliderTrackLayout, setSliderTrackLayout] = useState({ y: 0, height: 200 });
-  const [flash, setFlash] = useState('off'); // off, on, auto
+  const [flash, setFlash] = useState('off');
 
   // Error handling callback
   const onError = useCallback((error) => {
@@ -1204,49 +1243,67 @@ export const CameraScreen = ({ route, navigation }) => {
     }
   }, []);
 
-  // Zoom functionality - use actual zoom values (0.5x = 0.5x, 1x = 1x)
-  // Check if device has wide lens (minZoom < 1 indicates wide/ultra-wide lens support)
+  // Zoom functionality - simple implementation
   const zoom = useSharedValue(1.0);
-  const zoomOffset = useSharedValue(0); // For pinch gesture tracking
-
-  // Check if device has wide lens support (iOS devices with wide/ultra-wide lens)
-  // If device.minZoom < 1, it means the device can zoom out below 1x (typically 0.5x on iOS)
-  const hasWideLens = device && device.minZoom !== undefined && device.minZoom < 1;
+  const zoomOffset = useSharedValue(0);
   
-  // Get the actual minimum zoom value - memoized to use actual device.minZoom (typically 0.5x on iOS)
-  // On iOS with wide lens: device.minZoom is typically 0.5
-  // On devices without wide lens: use 1.0 as minimum
-  const deviceMinZoom = React.useMemo(() => {
+  // Get zoom range: minZoom is always 1 (switches to ultra-wide for 0.5x)
+  // neutralZoom is often 1, but can be > 1 for devices with ultra-wide cameras
+  // maxZoom can be very high, so we clamp it to a reasonable value
+  const minZoom = React.useMemo(() => {
     if (!device) return 1.0;
-    if (hasWideLens && device.minZoom !== undefined) {
-      return device.minZoom; // Use actual device minZoom (typically 0.5x on iOS)
-    }
-    return 1.0;
-  }, [device, hasWideLens]);
-
-  // Initialize zoom to 1x when device is available
-  useEffect(() => {
-    if (device) {
-      zoom.value = 1.0;
-    }
+    return device.minZoom ?? 1.0;
+  }, [device]);
+  
+  const maxZoom = React.useMemo(() => {
+    if (!device) return 4.0;
+    return Math.min(device.maxZoom ?? 4.0, 4.0);
   }, [device]);
 
-  // Pinch gesture for zoom
+  const neutralZoom = React.useMemo(() => {
+    if (!device) return 1.0;
+    return device.neutralZoom ?? 1.0;
+  }, [device]);
+
+  // Initialize zoom to neutralZoom (matches native camera's 1x view)
+  useEffect(() => {
+    if (device) {
+      zoom.value = neutralZoom;
+    }
+  }, [device, neutralZoom]);
+
+  // Pinch gesture for zoom - use shared values for limits
+  // Note: Pinch gestures work on iOS Simulator (trackpad/Magic Mouse) but have limited support on Android Emulator
+  // The zoom slider and +/- buttons provide fallback controls for emulators
   const pinchGesture = React.useMemo(() => {
     if (!device) return Gesture.Pinch();
     
-    const deviceMaxZoom = device.maxZoom ? Math.min(device.maxZoom, 4) : 4;
-    
     return Gesture.Pinch()
-      .onBegin(() => {
+      .onStart(() => {
         zoomOffset.value = zoom.value;
       })
       .onUpdate((event) => {
         const z = zoomOffset.value * event.scale;
-        // Ensure we can zoom to 0.5x on iOS devices with wide lens
-        zoom.value = Math.max(deviceMinZoom, Math.min(deviceMaxZoom, z));
+        zoom.value = Math.max(minZoomShared.value, Math.min(maxZoomShared.value, z));
+      })
+      .onEnd(() => {
+        // Ensure zoom is properly clamped on gesture end
+        const currentZoom = zoom.value;
+        const clampedZoom = Math.max(minZoomShared.value, Math.min(maxZoomShared.value, currentZoom));
+        if (currentZoom !== clampedZoom) {
+          zoom.value = withSpring(clampedZoom, {
+            damping: 15,
+            stiffness: 150,
+          });
+        }
+        // Reset offset to prevent stuck state
+        zoomOffset.value = zoom.value;
+      })
+      .onFinalize(() => {
+        // Final cleanup to prevent stuck state
+        zoomOffset.value = zoom.value;
       });
-  }, [device, deviceMinZoom]);
+  }, [device]);
 
   // Tap gesture for focus
   const tapGesture = React.useMemo(() => {
@@ -1259,14 +1316,32 @@ export const CameraScreen = ({ route, navigation }) => {
   }, [handleFocusTap]);
 
   // Combined gesture - allow both tap and pinch
+  // Use Race so pinch takes priority when 2 fingers are detected
   const composedGesture = React.useMemo(() => {
-    return Gesture.Simultaneous(tapGesture, pinchGesture);
+    return Gesture.Race(
+      pinchGesture,
+      tapGesture
+    );
   }, [tapGesture, pinchGesture]);
 
-  // Animated props for zoom
-  const animatedProps = useAnimatedProps(() => ({
-    zoom: zoom.value,
-  }), [zoom]);
+  // Store zoom limits as shared values for use in worklets (must be primitives)
+  const minZoomShared = useSharedValue(1);
+  const maxZoomShared = useSharedValue(4);
+  const neutralZoomShared = useSharedValue(1);
+  
+  // Update shared values when limits change
+  useEffect(() => {
+    minZoomShared.value = minZoom;
+    maxZoomShared.value = maxZoom;
+    neutralZoomShared.value = neutralZoom;
+  }, [minZoom, maxZoom, neutralZoom]);
+  
+  // Animated props for zoom - simple, no logging
+  const animatedProps = useAnimatedProps(() => {
+    return {
+      zoom: zoom.value,
+    };
+  }, [zoom]);
 
 
   // Zoom control handlers
@@ -1274,28 +1349,35 @@ export const CameraScreen = ({ route, navigation }) => {
     if (!device) return;
     
     const currentZoom = zoom.value;
-    const deviceMaxZoom = device.maxZoom ? Math.min(device.maxZoom, 4) : 4;
+    if (maxZoom <= currentZoom) return;
     
-    if (deviceMaxZoom <= currentZoom) return;
-    
-    const newZoom = Math.min(deviceMaxZoom, currentZoom + 0.5);
+    const newZoom = Math.min(maxZoom, currentZoom + 0.5);
     zoom.value = withSpring(newZoom, {
       damping: 15,
       stiffness: 150,
     });
-  }, [device, zoom]);
+  }, [device, zoom, maxZoom]);
 
   const handleZoomOut = useCallback(() => {
     if (!device) return;
+    
     const currentZoom = zoom.value;
-    const newZoom = Math.max(deviceMinZoom, currentZoom - 0.5);
-    zoom.value = withSpring(newZoom, {
+    let stepSize = 0.5;
+    if (currentZoom <= neutralZoom && currentZoom > minZoom) {
+      stepSize = (neutralZoom - minZoom) / 4;
+    }
+    const newZoom = currentZoom - stepSize;
+    
+    const clampedZoom = Math.max(minZoom, newZoom);
+    zoom.value = withSpring(clampedZoom, {
       damping: 15,
       stiffness: 150,
     });
-  }, [device, zoom, deviceMinZoom]);
+  }, [device, zoom, minZoom, neutralZoom]);
 
-  // Pan gesture for slider
+  // Pan gesture for slider - maps slider position to zoom value
+  // According to docs: minZoom=1 (ultra-wide/0.5x), neutralZoom (main camera/1x), maxZoom (zoomed in)
+  // Bottom = minZoom (1 = ultra-wide/0.5x), Center = neutralZoom (main camera/1x), Top = maxZoom (4x)
   const sliderPanGesture = React.useMemo(() => {
     if (!device) return Gesture.Pan();
     
@@ -1305,35 +1387,92 @@ export const CameraScreen = ({ route, navigation }) => {
         const sliderHeight = 180;
         const relativeY = event.y - trackStart;
         const clampedY = Math.max(0, Math.min(sliderHeight, relativeY));
-        const sliderProgress = 1 - (clampedY / sliderHeight);
+        const sliderProgress = clampedY / sliderHeight; // 0 at top, 1 at bottom
         
-        const deviceMaxZoom = Math.min(device.maxZoom ?? 4, 4);
-        const newZoom = deviceMinZoom + (deviceMaxZoom - deviceMinZoom) * sliderProgress;
+        // Get limits from shared values (safe to access in worklet)
+        const minZ = minZoomShared.value;
+        const maxZ = maxZoomShared.value;
+        const neutralZ = neutralZoomShared.value;
         
-        zoom.value = newZoom;
+        // Map slider progress to zoom value
+        // Bottom (progress = 1) = minZoom (1 = ultra-wide), Center (progress = 0.5) = neutralZoom, Top (progress = 0) = maxZoom
+        let newZoom;
+        if (sliderProgress <= 0.5) {
+          // Top half: neutralZoom to maxZoom
+          const topProgress = sliderProgress / 0.5; // 0 to 1
+          newZoom = neutralZ + (maxZ - neutralZ) * (1 - topProgress);
+        } else {
+          // Bottom half: minZoom (1) to neutralZoom
+          const bottomProgress = (sliderProgress - 0.5) / 0.5; // 0 to 1
+          newZoom = minZ + (neutralZ - minZ) * (1 - bottomProgress);
+        }
+        
+        // Clamp to device's actual range
+        const clampedZoom = Math.max(minZ, Math.min(maxZ, newZoom));
+        zoom.value = clampedZoom;
       });
-  }, [device, zoom, deviceMinZoom]);
+  }, [device, zoom]);
 
   // Animated style for slider indicator
+  // Maps zoom value to slider position: minZoom=1 (bottom/ultra-wide), neutralZoom (center/main camera), maxZoom (top)
+  // Use shared values to avoid Reanimated errors and ensure accuracy
   const sliderIndicatorStyle = useAnimatedStyle(() => {
     if (!device) {
-      return { top: 100 - 6 };
+      return { top: 100 - 6 }; // Center position
     }
     
     const sliderHeight = 180;
     const trackStart = 10;
-    const deviceMaxZoom = Math.min(device.maxZoom ?? 4, 4);
-    const zoomRange = deviceMaxZoom - deviceMinZoom;
-    const progress = zoomRange > 0 
-      ? (zoom.value - deviceMinZoom) / zoomRange 
-      : 0.5;
-    const clampedProgress = Math.max(0, Math.min(1, progress));
-    const top = trackStart + sliderHeight * (1 - clampedProgress);
+    const currentZoom = zoom.value;
+    
+    // Get limits from shared values (safe for worklets and ensures accuracy)
+    const minZ = minZoomShared.value;
+    const maxZ = maxZoomShared.value;
+    const neutralZ = neutralZoomShared.value;
+    
+    // Calculate slider position based on zoom value
+    // Bottom (progress = 1) = minZoom (1 = ultra-wide), Center (progress = 0.5) = neutralZoom, Top (progress = 0) = maxZoom
+    let sliderProgress; // 0 at top, 1 at bottom
+    
+    // Handle case where neutralZoom and minZoom are the same (no ultra-wide support)
+    if (Math.abs(neutralZ - minZ) < 0.001) {
+      // No ultra-wide: map entire range linearly from minZoom to maxZoom
+      const totalRange = maxZ - minZ;
+      if (totalRange > 0) {
+        const progress = (currentZoom - minZ) / totalRange;
+        sliderProgress = 1 - progress; // Invert: 0 at top (maxZoom), 1 at bottom (minZoom)
+      } else {
+        sliderProgress = 0.5;
+      }
+    } else {
+      // Has ultra-wide: split into two ranges with precise mapping
+      if (currentZoom >= neutralZ) {
+        // Top half: neutralZoom to maxZoom
+        const topRange = maxZ - neutralZ;
+        if (topRange > 0) {
+          const topProgress = (currentZoom - neutralZ) / topRange;
+          sliderProgress = 0.5 * (1 - topProgress); // 0.5 to 0
+        } else {
+          sliderProgress = 0.5;
+        }
+      } else {
+        // Bottom half: minZoom (1) to neutralZoom
+        const bottomRange = neutralZ - minZ;
+        if (bottomRange > 0) {
+          const bottomProgress = (currentZoom - minZ) / bottomRange;
+          sliderProgress = 0.5 + 0.5 * (1 - bottomProgress); // 0.5 to 1
+        } else {
+          sliderProgress = 0.5;
+        }
+      }
+    }
+    
+    const top = trackStart + sliderHeight * sliderProgress;
     
     return {
       top: top - 6,
     };
-  }, [device, zoom, deviceMinZoom]);
+  }, [device, zoom]);
 
   // Function to capture a photo
   const takePhoto = async () => {
@@ -1352,12 +1491,10 @@ export const CameraScreen = ({ route, navigation }) => {
       const imgUri = await CameraRoll.save(`file://${photo.path}`, {
         type: "photo",
       });
-      console.log("Photo saved to Camera Roll:", imgUri);
 
       let filepath;
       if (Platform.OS === "ios") {
         const fileData = await CameraRoll.iosGetImageDataById(imgUri);
-        console.log("iOS fileData:", fileData);
         if (!fileData?.node?.image?.filepath) return undefined;
         filepath = fileData.node.image.filepath;
       } else {
@@ -1368,23 +1505,12 @@ export const CameraScreen = ({ route, navigation }) => {
       const photoData = await RNFS.readFile(filepath, "base64");
       const fileName = `${new Date().getTime()}.jpg`;
       const imgPath = `${RNFS.DocumentDirectoryPath}/${fileName}`;
-      // const appDir = `${RNFS.DocumentDirectoryPath}/SolarVest_Project`;
-      // await RNFS.mkdir(appDir);
-      // const imgPath = `${appDir}/${fileName}`;
-      console.log("imgPath before save:", imgPath);
 
       // Write the photo data to the app's documents directory
       await RNFS.writeFile(imgPath, photoData, "base64");
-      console.log("Image saved to:", imgPath);
-
-      // const rotatedImageUri = await PhotoManipulator.rotatedImageUri(imgPath, '90');
-      // console.log('Rotated image saved to:', rotatedImageUri);
-
-      // console.log(rotatedImageUri)
 
       // Get device orientation and save image section
       Orientation.getDeviceOrientation((orientation) => {
-        console.log("Device orientation:", orientation);
         setImageSections((prevImageSections) => {
           const newImageSection = {
             id: generateUniqueId(),
@@ -1403,14 +1529,9 @@ export const CameraScreen = ({ route, navigation }) => {
           AsyncStorage.setItem(
             "imageSection",
             JSON.stringify(updatedImageSections)
-          )
-            .then(() => console.log("ImageSection saved"))
-            .catch((error) => {
-              console.error(
-                "Error setting imageSection in AsyncStorage:",
-                error
-              );
-            });
+          ).catch((error) => {
+            console.error("Error setting imageSection in AsyncStorage:", error);
+          });
 
           return updatedImageSections;
         });
@@ -1421,54 +1542,36 @@ export const CameraScreen = ({ route, navigation }) => {
   };
 
 
-  const screenRatio = height / width;
-  const cameraRatio = 16 / 9; // You can adjust this depending on your needs
-
   if (device != null) {
+    // IMPORTANT: react-native-vision-camera preview ALWAYS uses video format
+    // The preview stream is optimized for real-time display, so it uses video format
+    // To match native Photo camera view better, we select format with high video resolution
+    // Note: Preview cannot use photo format directly - this is a limitation of camera previews
     const format = useCameraFormat(device, [
-      { photoAspectRatio: 4 / 3 },
-      { photoResolution: { width: 1280, height: 960 } },
-      { photoHdr: true },
+      { videoResolution: { width: 1920, height: 1080 } }, // High quality video for preview (preview uses video stream)
+      { photoResolution: { width: 4032, height: 3024 } }, // High quality photo for capture
+      { photoAspectRatio: 4 / 3 }, // Match photo aspect ratio
     ]);
+    
+    
     return (
       <GestureHandlerRootView style={{ flex: 1 }}>
-
         <View style={styles.cameraContainer}>
           <GestureDetector gesture={composedGesture}>
             <View style={StyleSheet.absoluteFill}>
-
               <ReanimatedCamera
                 ref={camera}
                 onError={onError}
-                // format={format}
-                // outputOrientation="portrait"
-                //  orientation='portrait-upside-down'
-                // style={StyleSheet.absoluteFill}
-                style={[
-                  styles.camera,
-                  {
-                    height: screenRatio > cameraRatio ? height : width * cameraRatio, // Adjust height based on aspect ratio
-                    width: screenRatio > cameraRatio ? height / cameraRatio : width, // Adjust width based on aspect ratio
-                  },
-                ]}
+                format={format}
                 device={device}
                 isActive={true}
                 photo={true}
-                ratio="16:9"
                 photoQualityBalance="quality"
-                // resizeMode={'contain'}
                 torch={flash === 'on' ? 'on' : 'off'}
                 focusable={true}
                 animatedProps={animatedProps}
-                // onInitialized={async () => {
-                //   console.log('Camera ready');
-                //   try {
-                //     await camera.current.focus({ x: 0.5, y: 0.5 });
-                //     console.log('Focus call sent');
-                //   } catch (e) {
-                //     console.warn('Focus failed:', e);
-                //   }
-                // }}
+                style={StyleSheet.absoluteFill}
+                resizeMode="cover"
               />
             </View>
 
@@ -1479,7 +1582,8 @@ export const CameraScreen = ({ route, navigation }) => {
               position: "absolute",
               top: 0,
               marginTop: 4,
-              alignself: "center",
+              width: "100%",
+              alignItems: "center",
             }}
           >
             <TouchableOpacity
@@ -1673,7 +1777,8 @@ export const CameraScreen = ({ route, navigation }) => {
             style={{
               position: "absolute",
               bottom: height * 0.4,
-              alignself: "center",
+              width: "100%",
+              alignItems: "center",
             }}
           >
             <TouchableOpacity style={styles.cameraButton} onPress={takePhoto}>
@@ -1782,17 +1887,12 @@ const styles = StyleSheet.create({
   },
   cameraContainer: {
     flex: 1,
-    minHeight: height * 0.3,
     width: "100%",
-    rowGap: 5,
-    alignItems: "center",
-
-    // backgroundColor: 'black'
+    backgroundColor: 'black',
   },
   camera: {
-    height: height * 0.3,
-    width: "92%",
-    alignSelf: "center",
+    flex: 1,
+    width: "100%",
   },
   cameraButton: {
     alignItems: "center",
