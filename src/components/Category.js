@@ -1245,7 +1245,6 @@ export const CameraScreen = ({ route, navigation }) => {
 
   // Zoom functionality - simple implementation
   const zoom = useSharedValue(1.0);
-  const zoomOffset = useSharedValue(0);
   
   // Get zoom range: minZoom is always 1 (switches to ultra-wide for 0.5x)
   // neutralZoom is often 1, but can be > 1 for devices with ultra-wide cameras
@@ -1268,42 +1267,15 @@ export const CameraScreen = ({ route, navigation }) => {
   // Initialize zoom to neutralZoom (matches native camera's 1x view)
   useEffect(() => {
     if (device) {
-      zoom.value = neutralZoom;
+      const initialZoom = neutralZoom || 1.0;
+      // Ensure zoom values are initialized
+      zoom.value = initialZoom;
+      // Also ensure shared limits are set
+      minZoomShared.value = minZoom || 1.0;
+      maxZoomShared.value = maxZoom || 4.0;
+      neutralZoomShared.value = neutralZoom || 1.0;
     }
-  }, [device, neutralZoom]);
-
-  // Pinch gesture for zoom - use shared values for limits
-  // Note: Pinch gestures work on iOS Simulator (trackpad/Magic Mouse) but have limited support on Android Emulator
-  // The zoom slider and +/- buttons provide fallback controls for emulators
-  const pinchGesture = React.useMemo(() => {
-    if (!device) return Gesture.Pinch();
-    
-    return Gesture.Pinch()
-      .onStart(() => {
-        zoomOffset.value = zoom.value;
-      })
-      .onUpdate((event) => {
-        const z = zoomOffset.value * event.scale;
-        zoom.value = Math.max(minZoomShared.value, Math.min(maxZoomShared.value, z));
-      })
-      .onEnd(() => {
-        // Ensure zoom is properly clamped on gesture end
-        const currentZoom = zoom.value;
-        const clampedZoom = Math.max(minZoomShared.value, Math.min(maxZoomShared.value, currentZoom));
-        if (currentZoom !== clampedZoom) {
-          zoom.value = withSpring(clampedZoom, {
-            damping: 15,
-            stiffness: 150,
-          });
-        }
-        // Reset offset to prevent stuck state
-        zoomOffset.value = zoom.value;
-      })
-      .onFinalize(() => {
-        // Final cleanup to prevent stuck state
-        zoomOffset.value = zoom.value;
-      });
-  }, [device]);
+  }, [device, neutralZoom, minZoom, maxZoom]);
 
   // Tap gesture for focus
   const tapGesture = React.useMemo(() => {
@@ -1315,29 +1287,32 @@ export const CameraScreen = ({ route, navigation }) => {
       });
   }, [handleFocusTap]);
 
-  // Combined gesture - allow both tap and pinch
-  // Use Race so pinch takes priority when 2 fingers are detected
+  // Gesture for tap to focus
   const composedGesture = React.useMemo(() => {
-    return Gesture.Race(
-      pinchGesture,
-      tapGesture
-    );
-  }, [tapGesture, pinchGesture]);
+    return tapGesture;
+  }, [tapGesture]);
 
   // Store zoom limits as shared values for use in worklets (must be primitives)
-  const minZoomShared = useSharedValue(1);
-  const maxZoomShared = useSharedValue(4);
-  const neutralZoomShared = useSharedValue(1);
+  // Initialize with safe defaults to prevent crashes - MUST be defined before gesture
+  const minZoomShared = useSharedValue(1.0);
+  const maxZoomShared = useSharedValue(4.0);
+  const neutralZoomShared = useSharedValue(1.0);
   
-  // Update shared values when limits change
+  // Update shared values when limits change - ensure they're always valid
   useEffect(() => {
-    minZoomShared.value = minZoom;
-    maxZoomShared.value = maxZoom;
-    neutralZoomShared.value = neutralZoom;
+    const safeMinZoom = minZoom && !isNaN(minZoom) && isFinite(minZoom) ? minZoom : 1.0;
+    const safeMaxZoom = maxZoom && !isNaN(maxZoom) && isFinite(maxZoom) ? maxZoom : 4.0;
+    const safeNeutralZoom = neutralZoom && !isNaN(neutralZoom) && isFinite(neutralZoom) ? neutralZoom : 1.0;
+    
+    // Ensure values are set synchronously before any gesture can access them
+    if (minZoomShared) minZoomShared.value = Math.max(0.1, safeMinZoom);
+    if (maxZoomShared) maxZoomShared.value = Math.max(safeMinZoom, Math.min(10, safeMaxZoom));
+    if (neutralZoomShared) neutralZoomShared.value = Math.max(safeMinZoom, Math.min(safeMaxZoom, safeNeutralZoom));
   }, [minZoom, maxZoom, neutralZoom]);
   
   // Animated props for zoom - simple, no logging
   const animatedProps = useAnimatedProps(() => {
+    'worklet';
     return {
       zoom: zoom.value,
     };
@@ -1376,49 +1351,124 @@ export const CameraScreen = ({ route, navigation }) => {
   }, [device, zoom, minZoom, neutralZoom]);
 
   // Pan gesture for slider - maps slider position to zoom value
-  // According to docs: minZoom=1 (ultra-wide/0.5x), neutralZoom (main camera/1x), maxZoom (zoomed in)
-  // Bottom = minZoom (1 = ultra-wide/0.5x), Center = neutralZoom (main camera/1x), Top = maxZoom (4x)
+  // Improved with better touch handling and logarithmic scale support
+  // Bottom = minZoom (ultra-wide), Center = neutralZoom (main camera/1x), Top = maxZoom (zoomed in)
   const sliderPanGesture = React.useMemo(() => {
-    if (!device) return Gesture.Pan();
+    if (!device) {
+      return Gesture.Pan().enabled(false);
+    }
+    
+    // Capture shared values in closure
+    const zoomRef = zoom;
+    const minZoomRef = minZoomShared;
+    const maxZoomRef = maxZoomShared;
+    const neutralZoomRef = neutralZoomShared;
     
     return Gesture.Pan()
+      .enabled(true)
+      .onBegin(() => {
+        'worklet';
+        // Optional: Add haptic feedback when starting to drag
+        // This provides better user feedback
+      })
       .onUpdate((event) => {
+        'worklet';
+        if (!event) return;
+        
         const trackStart = 10;
         const sliderHeight = 180;
         const relativeY = event.y - trackStart;
+        // Ensure proper clamping to prevent stuck state
         const clampedY = Math.max(0, Math.min(sliderHeight, relativeY));
-        const sliderProgress = clampedY / sliderHeight; // 0 at top, 1 at bottom
+        // Calculate progress with better precision
+        const sliderProgress = Math.max(0, Math.min(1, clampedY / sliderHeight)); // 0 at top, 1 at bottom
         
-        // Get limits from shared values (safe to access in worklet)
-        const minZ = minZoomShared.value;
-        const maxZ = maxZoomShared.value;
-        const neutralZ = neutralZoomShared.value;
+        // Get limits from captured references
+        const minZ = minZoomRef.value;
+        const maxZ = maxZoomRef.value;
+        const neutralZ = neutralZoomRef.value;
         
-        // Map slider progress to zoom value
-        // Bottom (progress = 1) = minZoom (1 = ultra-wide), Center (progress = 0.5) = neutralZoom, Top (progress = 0) = maxZoom
+        // Map slider progress to zoom value with improved calculation
+        // Bottom (progress = 1) = minZoom, Center (progress = 0.5) = neutralZoom, Top (progress = 0) = maxZoom
         let newZoom;
-        if (sliderProgress <= 0.5) {
-          // Top half: neutralZoom to maxZoom
-          const topProgress = sliderProgress / 0.5; // 0 to 1
-          newZoom = neutralZ + (maxZ - neutralZ) * (1 - topProgress);
+        
+        // Handle case where neutralZoom equals minZoom (no ultra-wide support)
+        if (Math.abs(neutralZ - minZ) < 0.001) {
+          // No ultra-wide: map entire range from minZoom to maxZoom
+          const totalRange = maxZ - minZ;
+          if (totalRange > 0) {
+            const progress = 1 - sliderProgress; // Invert: 0 at bottom (minZoom), 1 at top (maxZoom)
+            newZoom = minZ + totalRange * progress;
+          } else {
+            newZoom = minZ;
+          }
         } else {
-          // Bottom half: minZoom (1) to neutralZoom
-          const bottomProgress = (sliderProgress - 0.5) / 0.5; // 0 to 1
-          newZoom = minZ + (neutralZ - minZ) * (1 - bottomProgress);
+          // Has ultra-wide: split into two ranges with smooth transitions
+          if (sliderProgress <= 0.5) {
+            // Top half: neutralZoom to maxZoom (zooming in)
+            const topProgress = Math.max(0, Math.min(1, sliderProgress / 0.5)); // 0 to 1, clamped
+            newZoom = neutralZ + (maxZ - neutralZ) * (1 - topProgress);
+          } else {
+            // Bottom half: minZoom to neutralZoom (ultra-wide to normal)
+            // Ensure smooth transition without getting stuck
+            const bottomProgress = Math.max(0, Math.min(1, (sliderProgress - 0.5) / 0.5)); // 0 to 1, clamped
+            // Use linear interpolation for smooth transition
+            newZoom = minZ + (neutralZ - minZ) * (1 - bottomProgress);
+            // Ensure we don't get stuck at boundaries
+            if (bottomProgress >= 0.99) {
+              newZoom = minZ; // Force to minZoom when at bottom
+            } else if (bottomProgress <= 0.01) {
+              newZoom = neutralZ; // Force to neutralZoom when at center
+            }
+          }
         }
         
-        // Clamp to device's actual range
-        const clampedZoom = Math.max(minZ, Math.min(maxZ, newZoom));
-        zoom.value = clampedZoom;
+        // Ensure zoom is valid and update immediately
+        let clampedZoom = Math.max(minZ, Math.min(maxZ, newZoom));
+        
+        // Handle edge cases for ultra-wide range (0.7x-0.8x area)
+        // Ensure smooth transitions without precision issues
+        if (clampedZoom < neutralZ && clampedZoom > minZ) {
+          // In ultra-wide range - ensure we're not stuck
+          const range = neutralZ - minZ;
+          if (range > 0.001) {
+            // Normalize to prevent precision issues
+            const normalized = (clampedZoom - minZ) / range;
+            clampedZoom = minZ + range * Math.max(0, Math.min(1, normalized));
+          }
+        }
+        
+        // Always update, even if at boundaries, to prevent stuck state
+        zoomRef.value = clampedZoom;
+      })
+      .onEnd(() => {
+        'worklet';
+        // Ensure final zoom is properly clamped
+        const currentZoom = zoomRef.value;
+        const minZ = minZoomRef.value;
+        const maxZ = maxZoomRef.value;
+        const clampedZoom = Math.max(minZ, Math.min(maxZ, currentZoom));
+        
+        // Only apply spring if there's a significant difference
+        // This prevents stuck state when at boundaries
+        if (Math.abs(currentZoom - clampedZoom) > 0.001) {
+          zoomRef.value = withSpring(clampedZoom, {
+            damping: 20,
+            stiffness: 200,
+          });
+        } else {
+          // Ensure value is set even if no animation needed
+          zoomRef.value = clampedZoom;
+        }
       });
-  }, [device, zoom]);
+  }, [device, zoom, minZoomShared, maxZoomShared, neutralZoomShared]);
 
   // Animated style for slider indicator
   // Maps zoom value to slider position: minZoom=1 (bottom/ultra-wide), neutralZoom (center/main camera), maxZoom (top)
   // Use shared values to avoid Reanimated errors and ensure accuracy
   const sliderIndicatorStyle = useAnimatedStyle(() => {
     if (!device) {
-      return { top: 100 - 6 }; // Center position
+      return { top: 100 - 8 }; // Center position (adjusted for 16px indicator)
     }
     
     const sliderHeight = 180;
@@ -1456,21 +1506,28 @@ export const CameraScreen = ({ route, navigation }) => {
           sliderProgress = 0.5;
         }
       } else {
-        // Bottom half: minZoom (1) to neutralZoom
+        // Bottom half: minZoom to neutralZoom
         const bottomRange = neutralZ - minZ;
-        if (bottomRange > 0) {
-          const bottomProgress = (currentZoom - minZ) / bottomRange;
-          sliderProgress = 0.5 + 0.5 * (1 - bottomProgress); // 0.5 to 1
+        if (bottomRange > 0.001) {
+          // Clamp currentZoom to valid range first
+          const clampedZoom = Math.max(minZ, Math.min(neutralZ, currentZoom));
+          const bottomProgress = (clampedZoom - minZ) / bottomRange;
+          // Ensure progress is between 0 and 1
+          const safeProgress = Math.max(0, Math.min(1, bottomProgress));
+          sliderProgress = 0.5 + 0.5 * (1 - safeProgress); // 0.5 to 1
         } else {
           sliderProgress = 0.5;
         }
       }
     }
     
+    // Ensure progress is within bounds to prevent stuck state
+    sliderProgress = Math.max(0, Math.min(1, sliderProgress));
     const top = trackStart + sliderHeight * sliderProgress;
     
+    // Center the indicator (16px height / 2 = 8px)
     return {
-      top: top - 6,
+      top: top - 8,
     };
   }, [device, zoom]);
 
@@ -1557,7 +1614,26 @@ export const CameraScreen = ({ route, navigation }) => {
     return (
       <GestureHandlerRootView style={{ flex: 1 }}>
         <View style={styles.cameraContainer}>
-          <GestureDetector gesture={composedGesture}>
+          {device ? (
+            <GestureDetector gesture={composedGesture}>
+              <View style={StyleSheet.absoluteFill}>
+                <ReanimatedCamera
+                  ref={camera}
+                  onError={onError}
+                  format={format}
+                  device={device}
+                  isActive={true}
+                  photo={true}
+                  photoQualityBalance="quality"
+                  torch={flash === 'on' ? 'on' : 'off'}
+                  focusable={true}
+                  animatedProps={animatedProps}
+                  style={StyleSheet.absoluteFill}
+                  resizeMode="cover"
+                />
+              </View>
+            </GestureDetector>
+          ) : (
             <View style={StyleSheet.absoluteFill}>
               <ReanimatedCamera
                 ref={camera}
@@ -1574,8 +1650,7 @@ export const CameraScreen = ({ route, navigation }) => {
                 resizeMode="cover"
               />
             </View>
-
-          </GestureDetector>
+          )}
 
           <View
             style={{
@@ -1631,7 +1706,7 @@ export const CameraScreen = ({ route, navigation }) => {
               </Text>
             </TouchableOpacity>
 
-            {/* Slider Track Container */}
+            {/* Slider Track Container - Improved touch area */}
             <GestureDetector gesture={sliderPanGesture}>
               <View
                 ref={sliderTrackRef}
@@ -1640,12 +1715,14 @@ export const CameraScreen = ({ route, navigation }) => {
                   setSliderTrackLayout({ y, height });
                 }}
                 style={{
-                  width: 40,
+                  width: 50, // Increased from 40 for better touch area
                   height: 200,
                   alignItems: "center",
                   justifyContent: "space-between",
                   paddingVertical: 10,
                   position: "relative",
+                  // Improved touch target
+                  paddingHorizontal: 5,
                 }}
               >
                 {/* Dotted Track */}
@@ -1655,7 +1732,7 @@ export const CameraScreen = ({ route, navigation }) => {
                     width: 2,
                     height: 180,
                     top: 10,
-                    left: 19, // Center the line (40px width / 2 - 1px)
+                    left: 24, // Center the line (50px width / 2 - 1px for 2px line)
                   }}
                 >
                   {Array.from({ length: 20 }).map((_, index) => (
@@ -1683,6 +1760,7 @@ export const CameraScreen = ({ route, navigation }) => {
                     borderWidth: 1,
                     borderColor: "white",
                     backgroundColor: "transparent",
+                    alignSelf: "center", // Center on the vertical line
                   }}
                 />
 
@@ -1691,15 +1769,16 @@ export const CameraScreen = ({ route, navigation }) => {
                   style={[
                     {
                       position: "absolute",
-                      width: 12,
-                      height: 12,
-                      borderRadius: 6,
+                      width: 16,
+                      height: 16,
+                      borderRadius: 8,
                       backgroundColor: "white",
                       shadowColor: "white",
                       shadowOffset: { width: 0, height: 0 },
                       shadowOpacity: 0.8,
                       shadowRadius: 4,
                       elevation: 5,
+                      left: 17, // Center on vertical line: (50/2) - (16/2) - 1 = 25 - 8 - 1 = 17
                     },
                     sliderIndicatorStyle,
                   ]}
@@ -1710,7 +1789,7 @@ export const CameraScreen = ({ route, navigation }) => {
                   style={{
                     position: "absolute",
                     top: 10 + 90 - 3, // Center of slider (180/2 = 90) minus half marker height
-                    right: -4,
+                    left: 22, // Center on vertical line: (50/2) - (6/2) = 25 - 3 = 22
                     width: 6,
                     height: 6,
                     borderRadius: 3,
@@ -1723,7 +1802,7 @@ export const CameraScreen = ({ route, navigation }) => {
                     style={{
                       position: "absolute",
                       top: -3,
-                      right: 2,
+                      left: 1.5, // Center the triangle on the marker
                       width: 0,
                       height: 0,
                       borderLeftWidth: 3,
@@ -1745,6 +1824,7 @@ export const CameraScreen = ({ route, navigation }) => {
                     borderWidth: 1,
                     borderColor: "white",
                     backgroundColor: "transparent",
+                    alignSelf: "center", // Center on the vertical line
                   }}
                 />
               </View>
@@ -1794,31 +1874,31 @@ export const CameraScreen = ({ route, navigation }) => {
               height: height * 0.2,
             }}
           >
-            <Carousel
-              loop
-              width={width}
-              height={height * 0.2}
-              sliderWidth={width}
-              itemWidth={width * 0.3}
-              data={imageSections.filter((item) => item.picture !== "")}
-              inactiveSlideScale={1}
-              scrollAnimationDuration={1000}
-              onSnapToItem={(index) => console.log("current index:", index)}
-              renderItem={({ item }) => (
-                console.log(item),
-                (
-                  <View
-                    style={{ flex: 1, borderWidth: 1, justifyContent: "center" }}
-                  >
-                    <Image
-                      source={{ uri: item.picture }}
-                      style={{ flex: 1 }}
-                      resizeMode="contain"
-                    />
-                  </View>
-                )
-              )}
-            />
+            {(() => {
+              const capturedImages = imageSections.filter((item) => item.picture !== "");
+              const imageView = (uri) => (
+                <View style={{ flex: 1, borderWidth: 1, justifyContent: "center" }}>
+                  <Image source={{ uri }} style={{ flex: 1 }} resizeMode="contain" />
+                </View>
+              );
+
+              return capturedImages.length === 1 ? (
+                imageView(capturedImages[0].picture)
+              ) : capturedImages.length > 1 ? (
+                <Carousel
+                  loop={false}
+                  width={width}
+                  height={height * 0.2}
+                  sliderWidth={width}
+                  itemWidth={width * 0.3}
+                  data={capturedImages}
+                  inactiveSlideScale={1}
+                  scrollAnimationDuration={1000}
+                  onSnapToItem={(index) => console.log("current index:", index)}
+                  renderItem={({ item }) => imageView(item.picture)}
+                />
+              ) : null;
+            })()}
           </View>
           {/* <View style={{ position: 'absolute', bottom: 0, width: '100%', height: height * 0.2 }}>
                     <Carousel
