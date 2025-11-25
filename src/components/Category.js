@@ -1245,6 +1245,7 @@ export const CameraScreen = ({ route, navigation }) => {
 
   // Zoom functionality - simple implementation
   const zoom = useSharedValue(1.0);
+  const zoomOffset = useSharedValue(1.0); // Initialize to 1.0 instead of 0
   
   // Get zoom range: minZoom is always 1 (switches to ultra-wide for 0.5x)
   // neutralZoom is often 1, but can be > 1 for devices with ultra-wide cameras
@@ -1270,12 +1271,90 @@ export const CameraScreen = ({ route, navigation }) => {
       const initialZoom = neutralZoom || 1.0;
       // Ensure zoom values are initialized
       zoom.value = initialZoom;
+      zoomOffset.value = initialZoom; // Initialize zoomOffset for pinch gesture
       // Also ensure shared limits are set
       minZoomShared.value = minZoom || 1.0;
       maxZoomShared.value = maxZoom || 4.0;
       neutralZoomShared.value = neutralZoom || 1.0;
     }
   }, [device, neutralZoom, minZoom, maxZoom]);
+
+  // Pinch-to-zoom gesture - following official VisionCamera documentation exactly
+  // Reference: https://react-native-vision-camera.com/docs/guides/zooming
+  const pinchGesture = React.useMemo(() => {
+    if (!device) {
+      return Gesture.Pinch().enabled(false);
+    }
+    
+    // Capture shared values and device values in closure
+    const zoomRef = zoom;
+    const zoomOffsetRef = zoomOffset;
+    const deviceMinZoom = device.minZoom ?? 1.0;
+    const deviceMaxZoom = Math.min(device.maxZoom ?? 4.0, 4.0); // Clamp to realistic value
+    
+    return Gesture.Pinch()
+      .enabled(true)
+      .onBegin(() => {
+        'worklet';
+        // Store current zoom as offset when gesture begins
+        // CRITICAL: Always read the current zoom value directly to prevent zoom out issue
+        const currentZoom = zoomRef.value;
+        // Ensure we have a valid zoom value
+        if (currentZoom > 0 && isFinite(currentZoom)) {
+          zoomOffsetRef.value = currentZoom;
+        } else {
+          // Fallback to device minZoom if invalid
+          zoomOffsetRef.value = deviceMinZoom;
+        }
+      })
+      .onUpdate((event) => {
+        'worklet';
+        if (!event || !event.scale || event.scale <= 0) return;
+        
+        // Get the initial offset that was set in onBegin
+        const initialOffset = zoomOffsetRef.value;
+        
+        // Validate initial offset
+        if (!initialOffset || initialOffset <= 0) return;
+        
+        // Calculate zoom change relative to current zoom level
+        // This prevents the zoom out issue when starting a new pinch
+        // Scale of 1.0 means no change, > 1.0 means zoom in, < 1.0 means zoom out
+        const scaleChange = event.scale;
+        
+        // Calculate new zoom: apply scale change to current zoom
+        // Use direct calculation instead of interpolation to avoid mapping issues
+        let newZoom = initialOffset * scaleChange;
+        
+        // Clamp to device bounds
+        newZoom = Math.max(deviceMinZoom, Math.min(deviceMaxZoom, newZoom));
+        
+        // Update zoom value immediately
+        zoomRef.value = newZoom;
+      })
+      .onEnd(() => {
+        'worklet';
+        // Get final zoom value
+        const currentZoom = zoomRef.value;
+        const clampedZoom = Math.max(deviceMinZoom, Math.min(deviceMaxZoom, currentZoom));
+        
+        // Set final zoom value (no animation to prevent drift)
+        zoomRef.value = clampedZoom;
+        
+        // CRITICAL: Update offset to match final zoom IMMEDIATELY
+        // This ensures next pinch starts from exact current position
+        zoomOffsetRef.value = clampedZoom;
+      })
+      .onFinalize(() => {
+        'worklet';
+        // Final sync - ensure offset always matches current zoom
+        // This prevents any zoom out when starting new pinch
+        const finalZoom = zoomRef.value;
+        const clampedFinal = Math.max(deviceMinZoom, Math.min(deviceMaxZoom, finalZoom));
+        zoomRef.value = clampedFinal;
+        zoomOffsetRef.value = clampedFinal;
+      });
+  }, [device, zoom, zoomOffset]);
 
   // Tap gesture for focus
   const tapGesture = React.useMemo(() => {
@@ -1287,10 +1366,16 @@ export const CameraScreen = ({ route, navigation }) => {
       });
   }, [handleFocusTap]);
 
-  // Gesture for tap to focus
+  // Combined gesture - allow both tap and pinch
+  // Pinch requires 2 fingers, tap requires 1, so they won't conflict
   const composedGesture = React.useMemo(() => {
-    return tapGesture;
-  }, [tapGesture]);
+    if (!device) {
+      return tapGesture;
+    }
+    // Use Simultaneous since pinch (2 fingers) and tap (1 finger) won't conflict
+    // Make sure gestures can work across the entire screen area
+    return Gesture.Simultaneous(pinchGesture, tapGesture);
+  }, [tapGesture, pinchGesture, device]);
 
   // Store zoom limits as shared values for use in worklets (must be primitives)
   // Initialize with safe defaults to prevent crashes - MUST be defined before gesture
@@ -1613,9 +1698,9 @@ export const CameraScreen = ({ route, navigation }) => {
     
     return (
       <GestureHandlerRootView style={{ flex: 1 }}>
-        <View style={styles.cameraContainer}>
-          {device ? (
-            <GestureDetector gesture={composedGesture}>
+        <GestureDetector gesture={composedGesture}>
+          <View style={[styles.cameraContainer, StyleSheet.absoluteFill]}>
+            {device ? (
               <View style={StyleSheet.absoluteFill}>
                 <ReanimatedCamera
                   ref={camera}
@@ -1632,25 +1717,24 @@ export const CameraScreen = ({ route, navigation }) => {
                   resizeMode="cover"
                 />
               </View>
-            </GestureDetector>
-          ) : (
-            <View style={StyleSheet.absoluteFill}>
-              <ReanimatedCamera
-                ref={camera}
-                onError={onError}
-                format={format}
-                device={device}
-                isActive={true}
-                photo={true}
-                photoQualityBalance="quality"
-                torch={flash === 'on' ? 'on' : 'off'}
-                focusable={true}
-                animatedProps={animatedProps}
-                style={StyleSheet.absoluteFill}
-                resizeMode="cover"
-              />
-            </View>
-          )}
+            ) : (
+              <View style={StyleSheet.absoluteFill}>
+                <ReanimatedCamera
+                  ref={camera}
+                  onError={onError}
+                  format={format}
+                  device={device}
+                  isActive={true}
+                  photo={true}
+                  photoQualityBalance="quality"
+                  torch={flash === 'on' ? 'on' : 'off'}
+                  focusable={true}
+                  animatedProps={animatedProps}
+                  style={StyleSheet.absoluteFill}
+                  resizeMode="cover"
+                />
+              </View>
+            )}
 
           <View
             style={{
@@ -1920,7 +2004,8 @@ export const CameraScreen = ({ route, navigation }) => {
                         )}
                     />
                 </View> */}
-        </View>
+          </View>
+        </GestureDetector>
       </GestureHandlerRootView>
     );
   }
