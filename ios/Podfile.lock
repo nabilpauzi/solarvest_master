@@ -1,5 +1,5 @@
 PODS:
-  - AzureAuth (1.8.17):
+  - AzureAuth (1.9.0):
     - React
   - BEMCheckBox (1.4.1)
   - boost (1.84.0)
@@ -1273,11 +1273,11 @@ PODS:
     - ReactCommon/turbomodule/bridging
     - ReactCommon/turbomodule/core
     - Yoga
-  - react-native-config (1.6.0):
-    - react-native-config/App (= 1.6.0)
-  - react-native-config/App (1.6.0):
+  - react-native-config (1.6.1):
+    - react-native-config/App (= 1.6.1)
+  - react-native-config/App (1.6.1):
     - React-Core
-  - react-native-image-picker (8.2.0):
+  - react-native-image-picker (8.2.1):
     - DoubleConversion
     - glog
     - hermes-engine
@@ -1335,27 +1335,8 @@ PODS:
     - React-Core
   - react-native-progress-bar-android (1.0.5):
     - React
-  - react-native-quick-base64 (2.1.2):
-    - DoubleConversion
-    - glog
-    - hermes-engine
-    - RCT-Folly (= 2024.01.01.00)
-    - RCTRequired
-    - RCTTypeSafety
+  - react-native-quick-base64 (2.2.2):
     - React-Core
-    - React-debug
-    - React-Fabric
-    - React-featureflags
-    - React-graphics
-    - React-ImageManager
-    - React-NativeModulesApple
-    - React-RCTFabric
-    - React-rendererdebug
-    - React-utils
-    - ReactCodegen
-    - ReactCommon/turbomodule/bridging
-    - ReactCommon/turbomodule/core
-    - Yoga
   - react-native-safe-area-context (4.14.1):
     - React-Core
   - React-nativeconfig (0.75.5)
@@ -1620,18 +1601,18 @@ PODS:
     - React-utils (= 0.75.5)
   - rn-fetch-blob (0.12.0):
     - React-Core
-  - RNBackgroundFetch (4.2.7):
+  - RNBackgroundFetch (4.2.8):
     - React-Core
   - RNCAsyncStorage (1.24.0):
     - React-Core
-  - RNCCheckbox (0.5.17):
+  - RNCCheckbox (0.5.20):
     - BEMCheckBox (~> 1.4)
     - React-Core
   - RNCMaskedView (0.1.11):
     - React
   - RNFS (2.20.0):
     - React-Core
-  - RNGestureHandler (2.25.0):
+  - RNGestureHandler (2.30.0):
     - DoubleConversion
     - glog
     - hermes-engine
@@ -1741,7 +1722,7 @@ PODS:
     - ReactCommon/turbomodule/bridging
     - ReactCommon/turbomodule/core
     - Yoga
-  - RNShare (12.0.9):
+  - RNShare (12.2.1):
     - DoubleConversion
     - glog
     - hermes-engine
@@ -1762,7 +1743,7 @@ PODS:
     - ReactCommon/turbomodule/bridging
     - ReactCommon/turbomodule/core
     - Yoga
-  - RNVectorIcons (10.2.0):
+  - RNVectorIcons (10.3.0):
     - DoubleConversion
     - glog
     - hermes-engine
@@ -1790,11 +1771,11 @@ PODS:
     - libwebp (~> 1.0)
     - SDWebImage/Core (~> 5.10)
   - SocketRocket (0.7.0)
-  - VisionCamera (4.6.4):
-    - VisionCamera/Core (= 4.6.4)
-    - VisionCamera/React (= 4.6.4)
-  - VisionCamera/Core (4.6.4)
-  - VisionCamera/React (4.6.4):
+  - VisionCamera (4.7.3):
+    - VisionCamera/Core (= 4.7.3)
+    - VisionCamera/React (= 4.7.3)
+  - VisionCamera/Core (4.7.3)
+  - VisionCamera/React (4.7.3):
     - React-Core
   - WCPhotoManipulator (2.6.0)
   - Yoga (0.0.0)
@@ -2076,7 +2057,7 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native/ReactCommon/yoga"
 
 SPEC CHECKSUMS:
-  AzureAuth: 93f8c18ea720827c3be7853bdd1bdefbdc5e9fab
+  AzureAuth: 21aacd81fca611bc8f670476dae332dd874bd80a
   BEMCheckBox: 5ba6e37ade3d3657b36caecc35c8b75c6c2b1a4e
   boost: 4cb898d0bf20404aab1850c656dcea009429d6c1
   DoubleConversion: 76ab83afb40bddeeee456813d9c04f67f78771b5
@@ -2115,14 +2096,14 @@ SPEC CHECKSUMS:
   React-Mapbuffer: 5dffd4714a7261a2fd1d94985eec118d0728b787
   React-microtasksnativemodule: 9856dcf1c3d981843197b1b75253a079d961795d
   react-native-cameraroll: 38f071c30258e1d084c75154b00afaf3f22c4039
-  react-native-config: 0359788b7d461540c4774f52679d5d01fbff79e6
-  react-native-image-picker: 86f8954a0b8c0f85d56fa1d85ae87936ae74e615
+  react-native-config: 8ebcf99c9ed605aea6ecea5ecb80416c63f0fbdc
+  react-native-image-picker: 6390bb8352ac38cad29f4d2569510137db21702e
   react-native-orientation-locker: cc6f357b289a2e0dd2210fea0c52cb8e0727fdaa
   react-native-photo-editor: 386600fd6cc11b23b3a745944482db2d74a96dae
   react-native-photo-manipulator: 87a5cf154bbb3b8c97d70a8c6c1541c0c789c817
   react-native-pinchable: 97e5a79510a75e8be0dc3b556f340f9e4de96dab
   react-native-progress-bar-android: 70caf8832e7a6378a3340bc81f361f65ad406a54
-  react-native-quick-base64: f2ac8c102ec7ce02c9883abaed26fa61518b1b7f
+  react-native-quick-base64: 587ccca2d32a4ea6828aefeb43a4d9cccb486a96
   react-native-safe-area-context: 758e894ca5a9bd1868d2a9cfbca7326a2b6bf9dc
   React-nativeconfig: 237c862aab56a7426301fcbbb8dd6988745231e0
   React-NativeModulesApple: 5b3c2bcfa3a53b22da441b35189e902ede27513d
@@ -2151,24 +2132,24 @@ SPEC CHECKSUMS:
   ReactCodegen: 43d3ebb0cb9c6ffc92a254d31749fd29d69844a2
   ReactCommon: ee80ae3d276a9f1daa059169405b97c600dcba45
   rn-fetch-blob: 25612b6d6f6e980c6f17ed98ba2f58f5696a51ca
-  RNBackgroundFetch: 005d4742a64a511ea54cf2929ace9f0804a7c511
+  RNBackgroundFetch: e44c9e85d7fb3122c37d8a806278f62c7682d7ea
   RNCAsyncStorage: b6410dead2732b5c72a7fdb1ecb5651bbcf4674b
-  RNCCheckbox: 450ce156f3e29e25efa0315c96cfbabe5a39ded1
+  RNCCheckbox: 33b44487ca8008394ce658cc32b26eab04f426ef
   RNCMaskedView: 4c5ee1c8667d56077246cc6d1977f77393923560
   RNFS: 89de7d7f4c0f6bafa05343c578f61118c8282ed8
-  RNGestureHandler: 667fcafe32933456d8851e0a96932d2d2b34411a
+  RNGestureHandler: e8ed5db31abcc85175f4b7860a3e700dfc0ad9b6
   RNPermissions: 7c25493b4b47827bd53ed5efab20b9d15cba5897
   RNReanimated: 6b874c55e3db79aabfba0eedee9ca3ccfbfb355c
   RNScreens: 631b8768411a16e356f7934058d2139d0cc75157
-  RNShare: 381ed02f6c0dc42b8c24bb5a1e5df0ee5fd91354
-  RNVectorIcons: 182892e7d1a2f27b52d3c627eca5d2665a22ee28
+  RNShare: 02240a29d1c26c7aedae3b86ceb3424a0c09797e
+  RNVectorIcons: 18f6874f831ee0c755e31bb16b0f746c093fc0d8
   SDWebImage: a7f831e1a65eb5e285e3fb046a23fcfbf08e696d
   SDWebImageWebPCoder: 908b83b6adda48effe7667cd2b7f78c897e5111d
   SocketRocket: abac6f5de4d4d62d24e11868d7a2f427e0ef940d
-  VisionCamera: f56eaedde0d3fa095143b78374d29e89e71735f9
+  VisionCamera: 7187b3dac1ff3071234ead959ce311875748e14f
   WCPhotoManipulator: 804988e16a6fe941cddff942b2acf887110de5d6
   Yoga: 1dd9dabb9df8fe08f12cd522eae04a2da0e252eb
 
-PODFILE CHECKSUM: e0816e352840d36e01d3fb30271432c574d8e875
+PODFILE CHECKSUM: b1b270ad9d0d23018851f93a7fbece4b94725e72
 
 COCOAPODS: 1.16.2

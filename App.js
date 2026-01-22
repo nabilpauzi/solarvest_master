@@ -57,6 +57,7 @@ import Pinchable from "react-native-pinchable";
 import { btoa, atob, toByteArray} from "react-native-quick-base64";
 import { Settings } from "./src/components/Settings.js";
 import { retrieveAccessToken } from "./src/utils/sharePointUtils.js";
+import DownloadProgressModal from "./src/components/DownloadProgressModal.js";
 
 import { Buffer } from 'buffer';
 global.Buffer = Buffer;
@@ -163,17 +164,14 @@ const ProjectScreen = ({ navigation }) => {
               "X-RequestDigest": formDigest,
             },
           });
-          console.log("project created:" + project);
         }
       } catch (error) {
-        console.log("error in creating project", error);
       }
 
       Alert.alert("Project Created", "Project name saved successfully", [
         { text: "OK", onPress: () => goCategory(project) },
       ]);
     } catch (error) {
-      console.error("Error saving project name to AsyncStorage:", error);
     }
   };
 
@@ -215,7 +213,6 @@ const ProjectScreen = ({ navigation }) => {
       //   }
       // }
     } catch (error) {
-      console.error("Error loading project name from AsyncStorage:", error);
     }
   };
   useFocusEffect(
@@ -253,10 +250,8 @@ const ProjectScreen = ({ navigation }) => {
             deletedImages.forEach((item) => {
               RNFS.unlink(item.picture)
                 .then(() => {
-                  console.log("FILE DELETED from local");
                 })
                 .catch((err) => {
-                  console.log(err.message);
                 });
             });
 
@@ -342,6 +337,83 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
   const [shouldNavigate, setShouldNavigate] = useState(false);
   const [tempHolder, setTempHolder] = useState("");
   const [displayCategories, setDisplayCategories] = useState(defaultCategories);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [downloadProgress, setDownloadProgress] = useState({ total: 0, completed: 0, isDownloading: false });
+  const [showDownloadModal, setShowDownloadModal] = useState(false);
+  const downloadCancelRef = useRef(false);
+
+  // Helper: Refresh project data with updated categories
+  const refreshProjectData = async (images) => {
+    if (!isMountedRef.current) return;
+    
+    try {
+      const customNames = await getCustomCategoryNames();
+      const updatedCategories = defaultCategories.map((cat) => ({
+        ...cat,
+        name: customNames[cat.name] || cat.name,
+        originalName: cat.name,
+      }));
+      
+      const formatted = formatData(images, project, updatedCategories);
+      if (isMountedRef.current) {
+        setProjectData(formatted);
+      }
+    } catch (error) {
+      console.error('[HomeScreen] Error in refreshProjectData', { error: error.message });
+    }
+  };
+
+  // Helper: Download single image from SharePoint
+  const downloadImageFromSharePoint = async (sharePointUrl, accessToken) => {
+    try {
+      const serverRelativeUrl = sharePointUrl.replace('https://solarvest.sharepoint.com', '');
+      const fileDownloadUrl = `https://solarvest.sharepoint.com/sites/ProjectDevelopment/_api/web/GetFileByServerRelativeUrl('${serverRelativeUrl}')/$value`;
+      const imageResponse = await axios({
+        method: "GET",
+        url: fileDownloadUrl,
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: "application/octet-stream",
+        },
+        responseType: "arraybuffer",
+      });
+      
+      const fileName = sharePointUrl.substring(sharePointUrl.lastIndexOf('/') + 1);
+      const localFileName = `${new Date().getTime()}_${fileName}`;
+      const localPath = `${RNFS.DocumentDirectoryPath}/${localFileName}`;
+      const base64Data = Buffer.from(imageResponse.data).toString('base64');
+      await RNFS.writeFile(localPath, base64Data, 'base64');
+      
+      return `file://${localPath}`;
+    } catch (error) {
+      return null;
+    }
+  };
+
+  // Helper: Download images with progress tracking
+  const downloadImagesWithProgress = async (imagesToDownload, accessToken, onProgress) => {
+    const downloaded = [];
+    for (let i = 0; i < imagesToDownload.length; i++) {
+      if (downloadCancelRef.current) break;
+      
+      const img = imagesToDownload[i];
+      const localPath = await downloadImageFromSharePoint(img.picture || img.sharePointUrl, accessToken);
+      
+      if (localPath) {
+        downloaded.push({
+          ...img,
+          picture: localPath,
+          sharePointUrl: img.picture || img.sharePointUrl,
+          opt: img.opt === "delete" ? null : img.opt,
+        });
+      } else {
+        downloaded.push(img); // Keep original if download fails
+      }
+      
+      if (onProgress) onProgress(i + 1, imagesToDownload.length);
+    }
+    return downloaded;
+  };
 
   // Load categories with custom names and refresh data
   useFocusEffect(
@@ -360,13 +432,13 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
           const storedData = storedDataJSON ? JSON.parse(storedDataJSON) : [];
           setProjectData(formatData(storedData, project, updatedCategories));
         } catch (error) {
-          console.error("Error loading categories:", error);
           setDisplayCategories(defaultCategories);
         }
       };
       loadCategories();
     }, [project])
   );
+
 
   const goCategory = (displayName, originalName) => {
     // Use display name for navigation, but keep original for data matching
@@ -401,10 +473,25 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
   const [isDataFetched, setIsDataFetched] = useState(false);
   const projectRef = useRef(null);
   const [data, setData] = useState();
+  const isMountedRef = useRef(true);
+  
   useEffect(() => {
+    // Mark component as mounted
+    isMountedRef.current = true;
+    console.log('[HomeScreen] Component mounted, starting data fetch', { project, isMounted: isMountedRef.current });
+    
     const fetchData = async () => {
       try {
+        // Check if component is still mounted before starting
+        if (!isMountedRef.current) {
+          console.log('[HomeScreen] Component unmounted before fetchData started, aborting');
+          return;
+        }
+        
+        console.log('[HomeScreen] Starting fetchData', { project });
         const [accessToken, formDigest] = await retrieveAccessToken();
+        downloadCancelRef.current = false;
+        console.log('[HomeScreen] Access token retrieved, starting SharePoint fetch');
 
         const storedDataJSON = await AsyncStorage.getItem("sharePointData");
 
@@ -425,8 +512,23 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
           },
         });
 
-        const responseData = response.data.d.Folders.results;
-        let newData = [];
+        const responseData = response?.data?.d?.Folders?.results || [];
+        let imagesToDownload = [];
+        
+        // First, get existing images to check what we already have
+        const existingImagesCheckJSON = await AsyncStorage.getItem("imageCategory");
+        const existingImagesCheck = existingImagesCheckJSON ? JSON.parse(existingImagesCheckJSON) : [];
+        
+        // Create a map of existing images by sharePointUrl for quick lookup
+        const existingImagesMap = new Map();
+        for (const img of existingImagesCheck) {
+          const sharePointUrl = img.sharePointUrl || (img.picture?.startsWith('https://') ? img.picture : null);
+          if (sharePointUrl) {
+            existingImagesMap.set(sharePointUrl, img);
+          }
+        }
+        
+        
         await Promise.all(
           responseData.map(async (folder) => {
             const folderName = folder.Name;
@@ -445,96 +547,388 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
 
               if (
                 foldersResponse.status === 200 &&
-                foldersResponse.data.d.results
+                foldersResponse?.data?.d?.results
               ) {
                 const subfolder = foldersResponse.data.d.results;
                 // Fetch files inside the Category ID
                 for (const subfiles of subfolder) {
                   const subfilesName = subfiles.Name;
-                  const filesUri = subfiles.Files.__deferred.uri + "/$value";
+                  const filesUri = subfiles.Files.__deferred.uri;
                   try {
-                    // fetch cateogry ID
                     const filesResponse = await axios({
                       method: "GET",
                       url: filesUri,
                       headers: {
                         Authorization: `Bearer ${accessToken}`,
                         Accept: "application/json; odata=verbose",
-                        "Content-Type": "image/jpg",
                       },
-                      responseType: "arraybuffer",
                     });
-                    // const arrayBuffer = await toByteArray(filesResponse);
+                    
                     if (
                       filesResponse.status === 200 &&
-                      filesResponse.data.d.results
+                      filesResponse?.data?.d?.results
                     ) {
-                      if (filesResponse.data.d.results.length !== 0) {
-                        // const fileNamesInSubfolder = filesResponse.data.d.results.map(file => file.Name);
-                        const files = filesResponse.data.d.results;
-                        console.log("the files are: " + files);
-                        // console.log(files);
+                      const files = filesResponse.data.d.results;
+                      
                         for (const file of files) {
+                          // Skip files without required properties
+                          if (!file?.Name || !file?.ServerRelativeUrl) {
+                            console.warn('[HomeScreen] Skipping file with missing properties', file);
+                            continue;
+                          }
+                          
                           const pictureName = file.Name;
                           const picture = file.ServerRelativeUrl;
-                          // console.log(picture)
-                          newData.push({
-                            id: generateUniqueId(),
+                          const sharePointUrl = `https://solarvest.sharepoint.com${picture}`;
+                          const existingImage = existingImagesMap.get(sharePointUrl);
+                          
+                          // Safely extract description from pictureName
+                          const nameParts = pictureName.split("_");
+                          const descriptionPart = nameParts.slice(-2, -1)[0];
+                          const description = descriptionPart ? descriptionPart.replace(".jpg", "").replace(".JPG", "") : pictureName.replace(".jpg", "").replace(".JPG", "");
+                          
+                          // Always add to list - filtering will happen later to avoid redundant file checks
+                          imagesToDownload.push({
+                            id: existingImage?.id || generateUniqueId(),
                             project: project,
                             category: folderName,
                             categoryId: subfilesName,
-                            picture: `https://solarvest.sharepoint.com${picture}`,
-                            description: pictureName
-                              .split("_")
-                              .slice(-2, -1)[0]
-                              .replace(".jpg", ""),
-                            opt: null,
+                            pictureName: pictureName,
+                            serverRelativeUrl: picture,
+                            sharePointUrl: sharePointUrl,
+                            description: description,
+                            opt: existingImage?.opt || null,
                           });
-                          // console.log(`https://solarvest.sharepoint.com${picture}`);
                         }
-                      }
-                      // console.log(`Files inside ${folderName} No ${subfilesName}:`, files);
-                    } else {
-                      console.log(`No files found inside ${subfilesName}`);
                     }
                   } catch (error) {
-                    console.error(
-                      `Error fetching files for ${subfilesName}:`,
-                      error
-                    );
                   }
                 }
-              } else {
-                console.log(`No subfolders found inside ${folderName}`);
               }
             } catch (error) {
-              console.error(`Error fetching data for ${folderName}:`, error);
             }
           })
         );
-        // console.log("new data is :" + newData);
-        // Store fileNames in AsyncStorage
-        await AsyncStorage.setItem("sharePointData", JSON.stringify(newData));
-        setData(newData);
+        
+        
+        // Helper: Check if local file exists for an image
+        const checkLocalFileExists = async (imgInfo) => {
+          const existingImage = existingImagesMap.get(imgInfo.sharePointUrl);
+          if (!existingImage?.picture?.startsWith('file://')) return false;
+          
+          const localPath = existingImage.picture.replace('file://', '');
+          try {
+            return await RNFS.exists(localPath);
+          } catch {
+            return false;
+          }
+        };
+        
+        // Filter out images that already have valid local files
+        const imagesNeedingDownload = [];
+        for (const imgInfo of imagesToDownload) {
+          const fileExists = await checkLocalFileExists(imgInfo);
+          if (!fileExists) {
+            imagesNeedingDownload.push(imgInfo);
+          }
+        }
+        
+        console.log('[HomeScreen] Download summary', {
+          total: imagesToDownload.length,
+          alreadyDownloaded: imagesToDownload.length - imagesNeedingDownload.length,
+          needDownload: imagesNeedingDownload.length
+        });
+        
+        // Download image function
+        const downloadImage = async (imageInfo, accessToken) => {
+          if (downloadCancelRef.current || !isMountedRef.current) return null;
+          if (!imageInfo?.serverRelativeUrl || !imageInfo?.pictureName) {
+            console.error('[HomeScreen] Invalid imageInfo in downloadImage', imageInfo);
+            return null;
+          }
+          
+          try {
+            const fileDownloadUrl = `https://solarvest.sharepoint.com/sites/ProjectDevelopment/_api/web/GetFileByServerRelativeUrl('${imageInfo.serverRelativeUrl}')/$value`;
+            const imageResponse = await axios({
+              method: "GET",
+              url: fileDownloadUrl,
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                Accept: "application/octet-stream",
+              },
+              responseType: "arraybuffer",
+              timeout: 30000,
+            });
+            
+            if (!isMountedRef.current || downloadCancelRef.current) return null;
+            
+            // Check if response data exists
+            if (!imageResponse?.data) {
+              throw new Error('No image data received from server');
+            }
+            
+            const fileName = `${new Date().getTime()}_${imageInfo.pictureName}`;
+            const localPath = `${RNFS.DocumentDirectoryPath}/${fileName}`;
+            const arrayBuffer = imageResponse.data;
+            
+            // Ensure arrayBuffer is valid before converting
+            if (!arrayBuffer || arrayBuffer.byteLength === 0) {
+              throw new Error('Invalid or empty image data');
+            }
+            
+            const base64Data = Buffer.from(arrayBuffer).toString('base64');
+            
+            // Clear arraybuffer to help GC
+            imageResponse.data = null;
+            
+            await RNFS.writeFile(localPath, base64Data, 'base64');
+            
+            return {
+              ...imageInfo,
+              picture: `file://${localPath}`,
+            };
+          } catch (error) {
+            console.error('[HomeScreen] Error downloading image', {
+              imageName: imageInfo.pictureName,
+              error: error.message
+            });
+            return {
+              ...imageInfo,
+              picture: imageInfo.sharePointUrl,
+            };
+          }
+        };
+        
+        let newData = [];
+        const totalImages = imagesNeedingDownload.length;
+        const priorityCount = Math.min(25, totalImages);
+        
+        if (totalImages > 0 && isMountedRef.current) {
+          setDownloadProgress({ total: totalImages, completed: 0, isDownloading: true });
+          setShowDownloadModal(true);
+          
+          // Download priority images (first 25) immediately
+          const priorityImages = imagesNeedingDownload.slice(0, priorityCount);
+          
+          for (let i = 0; i < priorityImages.length; i++) {
+            if (downloadCancelRef.current) break;
+            
+            const result = await downloadImage(priorityImages[i], accessToken);
+            if (result && isMountedRef.current) {
+              newData.push(result);
+              setDownloadProgress(prev => ({ ...prev, completed: prev.completed + 1 }));
+            }
+          }
+          
+          // Download remaining images in background
+          if (totalImages > priorityCount && !downloadCancelRef.current) {
+            const backgroundImages = imagesNeedingDownload.slice(priorityCount);
+            
+            for (let i = 0; i < backgroundImages.length; i++) {
+              if (downloadCancelRef.current || !isMountedRef.current) break;
+              
+              const result = await downloadImage(backgroundImages[i], accessToken);
+              if (result && isMountedRef.current) {
+                newData.push(result);
+                setDownloadProgress(prev => ({ ...prev, completed: newData.length }));
+                
+                // Update AsyncStorage and UI periodically (every 5 images)
+                if ((i + 1) % 5 === 0 && isMountedRef.current) {
+                  const existingImagesJSON = await AsyncStorage.getItem("imageCategory");
+                  const existingImages = existingImagesJSON ? JSON.parse(existingImagesJSON) : [];
+                  const existingSharePointUrls = new Set(
+                    existingImages.map(img => img.sharePointUrl || img.picture).filter(url => url && url.startsWith('https://'))
+                  );
+                  const newImages = newData.filter(img => {
+                    const imgUrl = img.sharePointUrl || img.picture;
+                    return !existingSharePointUrls.has(imgUrl);
+                  });
+                  if (newImages.length > 0 && isMountedRef.current) {
+                    const merged = [...existingImages, ...newImages];
+                    try {
+                      await AsyncStorage.setItem("imageCategory", JSON.stringify(merged));
+                    } catch (error) {
+                      console.error('[HomeScreen] Error in periodic AsyncStorage update', { error: error.message });
+                    }
+                    
+                    const customNames = await getCustomCategoryNames();
+                    const updatedCategories = defaultCategories.map((cat) => ({
+                      ...cat,
+                      name: customNames[cat.name] || cat.name,
+                      originalName: cat.name,
+                    }));
+                    setProjectData(formatData(merged, project, updatedCategories));
+                  }
+                }
+              }
+            }
+          }
+          
+          setDownloadProgress(prev => ({ ...prev, isDownloading: false }));
+          setShowDownloadModal(false);
+        }
+        if (!isMountedRef.current) return;
+        
+        // Store SharePoint data
+        if (!isMountedRef.current) return;
+        
+        try {
+          await AsyncStorage.setItem("sharePointData", JSON.stringify(newData));
+          if (isMountedRef.current) setData(newData);
+        } catch (error) {
+          console.error('[HomeScreen] Error storing SharePoint data', { error: error.message });
+        }
+        
+        // Also merge into imageCategory so images appear in Pictures list
+        const existingImagesJSON = await AsyncStorage.getItem("imageCategory");
+        const existingImages = existingImagesJSON ? JSON.parse(existingImagesJSON) : [];
+        
+        // Check existing images that still need downloading (have SharePoint URLs but no local files)
+        const existingImagesNeedingDownload = [];
+        for (const img of existingImages) {
+          const sharePointUrl = img.picture?.startsWith('https://') ? img.picture : img.sharePointUrl;
+          
+          if (sharePointUrl?.startsWith('https://')) {
+            const localPath = (img.picture?.startsWith('file://') ? img.picture : img.sharePointUrl)?.replace('file://', '');
+            const fileExists = localPath ? await RNFS.exists(localPath).catch(() => false) : false;
+            
+            if (!fileExists) {
+              existingImagesNeedingDownload.push(img);
+            }
+          }
+        }
+        
+        if (existingImagesNeedingDownload.length > 0 && !downloadCancelRef.current && isMountedRef.current) {
+          const totalToDownload = existingImagesNeedingDownload.length;
+          setDownloadProgress({ total: totalToDownload, completed: 0, isDownloading: true });
+          setShowDownloadModal(true);
+          
+          const updatedImages = [];
+          for (let i = 0; i < existingImagesNeedingDownload.length; i++) {
+            if (downloadCancelRef.current || !isMountedRef.current) break;
+            
+            const img = existingImagesNeedingDownload[i];
+            const sharePointUrl = img.picture?.startsWith('https://') ? img.picture : img.sharePointUrl;
+            const localPath = await downloadImageFromSharePoint(sharePointUrl, accessToken);
+            
+            updatedImages.push({
+              ...img,
+              picture: localPath || sharePointUrl,
+              sharePointUrl: sharePointUrl,
+              opt: img.opt === "delete" ? null : img.opt,
+            });
+            
+            setDownloadProgress(prev => ({ ...prev, completed: i + 1 }));
+            
+            // Update periodically
+            if ((i + 1) % 5 === 0 && isMountedRef.current) {
+              const otherImages = existingImages.filter(existingImg => 
+                !existingImg.picture?.startsWith('https://solarvest.sharepoint.com')
+              );
+              const merged = [...otherImages, ...updatedImages];
+              await AsyncStorage.setItem("imageCategory", JSON.stringify(merged));
+              await refreshProjectData(merged);
+            }
+          }
+          
+          // Final update
+          if (isMountedRef.current && updatedImages.length > 0) {
+            const otherImages = existingImages.filter(existingImg => 
+              !existingImg.picture?.startsWith('https://solarvest.sharepoint.com')
+            );
+            const allUpdatedImages = [...otherImages, ...updatedImages];
+            await AsyncStorage.setItem("imageCategory", JSON.stringify(allUpdatedImages));
+            setDownloadProgress(prev => ({ ...prev, isDownloading: false }));
+            setShowDownloadModal(false);
+            await refreshProjectData(allUpdatedImages);
+          }
+        } else {
+          // Merge new images with existing
+          const existingSharePointUrls = new Set(
+            existingImages
+              .map(img => img.sharePointUrl || img.picture)
+              .filter(url => url?.startsWith('https://'))
+          );
+          const imagesToAdd = newData.filter(img => {
+            const imgUrl = img.sharePointUrl || img.picture;
+            return !existingSharePointUrls.has(imgUrl);
+          });
+          
+          if (imagesToAdd.length > 0) {
+            const mergedImages = [...existingImages, ...imagesToAdd];
+            await AsyncStorage.setItem("imageCategory", JSON.stringify(mergedImages));
+            await refreshProjectData(mergedImages);
+          }
+        }
+        
+        // Remove delete flags for images that exist in SharePoint
+        const existingImagesAfterDownload = await AsyncStorage.getItem("imageCategory");
+        const existingImagesParsed = existingImagesAfterDownload ? JSON.parse(existingImagesAfterDownload) : [];
+        
+        const finalUpdatedImages = existingImagesParsed.map((img) => {
+          const sharePointUrl = img.sharePointUrl || img.picture;
+          if (sharePointUrl?.startsWith('https://') && newData.some(newImg => (newImg.sharePointUrl || newImg.picture) === sharePointUrl)) {
+            if (img.opt === "delete" || img.opt === "Delete") {
+              return { ...img, opt: null };
+            }
+          }
+          return img;
+        });
+        
+        const hasChanges = finalUpdatedImages.some((img, idx) => img.opt !== existingImagesParsed[idx]?.opt);
+        if (hasChanges) {
+          await AsyncStorage.setItem("imageCategory", JSON.stringify(finalUpdatedImages));
+          await refreshProjectData(finalUpdatedImages);
+        }
       } catch (error) {
-        console.log("Error in fetching data: " + error);
+        console.error('[HomeScreen] Error in fetchData', {
+          error: error.message,
+          isMounted: isMountedRef.current
+        });
       }
     };
+
 
     if (!isDataFetched || projectRef.current !== project) {
       projectRef.current = project;
     }
     // if (TokenCredentials.login) {
-    //   fetchData();
+      fetchData();
     // }
-  }, []);
+    
+    // Cleanup function to cancel operations when component unmounts
+    return () => {
+      isMountedRef.current = false;
+      downloadCancelRef.current = true;
+      setData(null);
+      setProjectData([]);
+    };
+  }, [project]);
 
   const [projectData, setProjectData] = useState([]);
 
   const formatData = (storedData, project, categoriesToUse = displayCategories) => {
+    if (!storedData || !Array.isArray(storedData)) return [];
+    
     const filteredData = storedData.filter(
       (item) => item.project === project && item.opt != "delete"
     );
+    
+    if (filteredData.length > 0) {
+      const categoryCounts = filteredData.reduce((acc, img) => {
+        const key = `${img.category}/${img.categoryId}`;
+        acc[key] = (acc[key] || 0) + 1;
+        return acc;
+      }, {});
+      
+      // Debug: Show all images in each category
+      const categoryDetails = filteredData.reduce((acc, img) => {
+        const key = `${img.category}/${img.categoryId}`;
+        if (!acc[key]) acc[key] = [];
+        acc[key].push({ id: img.id, url: img.picture });
+        return acc;
+      }, {});
+    }
 
     const sections = filteredData.reduce((acc, item) => {
       const categoryKey = `${item.category}`;
@@ -555,7 +949,7 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
       return acc;
     }, {});
 
-    return categoriesToUse
+    const result = categoriesToUse
       .map(({ name, originalName }) => {
         // Try to find data by original name first, then by display name
         const originalNameToUse = originalName || name;
@@ -580,9 +974,6 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
               const currentIndex = storedData.findIndex(
                 (elem) => elem.id === item.id
               );
-              // const nextIndex = index < items.length - 1 ? storedData.indexOf(items[index + 1]) : null;
-              // const prevIndex = index != 0 ? storedData.indexOf(items[index - 1]) : null;
-              // const currentIndex = storedData.indexOf(item);
               return {
                 ...item,
                 nextIndex,
@@ -594,6 +985,8 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
         };
       })
       .filter(({ data }) => data.length > 0);
+    
+    return result;
   };
 
   const tempFetch = async () => {
@@ -619,7 +1012,6 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
 
       setProjectData(formatData(storedData, project, displayCategories));
     } catch (error) {
-      console.error("Error swapping picture items:", error);
     }
   };
 
@@ -650,6 +1042,18 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
         ))}
       </View>
       <PptModal projectData={projectData} project={project} />
+      
+      <DownloadProgressModal
+        visible={showDownloadModal}
+        progress={downloadProgress}
+        onClose={() => setShowDownloadModal(false)}
+        onCancel={() => {
+          downloadCancelRef.current = true;
+          setShowDownloadModal(false);
+          setDownloadProgress(prev => ({ ...prev, isDownloading: false }));
+        }}
+      />
+      
       {/* <Button title="get data" onPress={fetchSharePointData} /> */}
       <View>
         <Text style={styles.title}>Pictures</Text>
@@ -692,7 +1096,8 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
                 }
                 containerStyle={{ backgroundColor: "transparent" }}
               >
-                {categoryIdGroup.data.map((item, index) => (
+                {categoryIdGroup.data.map((item, index) => {
+              return (
                   <View key={item.id}>
                     <View style={styles.displayPictureContainer}>
                       <View
@@ -743,10 +1148,21 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
                           <Image
                             source={
                               item.picture == "null" || item.picture != null
-                                ? { uri: item.picture }
+                                ? { 
+                                    uri: item.picture,
+                                    headers: item.picture?.startsWith('https://solarvest.sharepoint.com') 
+                                      ? {} // SharePoint URLs may need auth, but Image component can't set headers
+                                      : {}
+                                  }
                                 : require("./src/assets/SolarvestFrontLogo.png")
                             }
                             style={styles.imageItem}
+                            onError={(error) => {
+                            }}
+                            onLoad={() => {
+                            }}
+                            resizeMode="contain"
+                            defaultSource={require("./src/assets/SolarvestFrontLogo.png")}
                           />
                         </Pinchable>
                         <Text style={styles.name}>
@@ -758,7 +1174,8 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
                       </View>
                     </View>
                   </View>
-                ))}
+                );
+              })}
               </ListItem.Accordion>
             ))}
           </ListItem.Accordion>
@@ -775,7 +1192,6 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
         {/* <Button title="see fetched Data" onPress={async () => {
             const storedDataJSON = await AsyncStorage.getItem('imageCategory');
             const storedData = storedDataJSON ? JSON.parse(storedDataJSON) : [];
-            console.log(storedData);
           }} /> */}
       </View>
     </ScrollView>
@@ -802,7 +1218,6 @@ const PptModal = ({ projectData, project }) => {
   const [loadingMessage, setLoadingMessage] = useState("Please wait...");
 
   useEffect(() => {
-    console.log("Project data loaded:", projectData);
     const initialSelectedHeaders = projectData.map(
       (category) => category.title
     );
@@ -823,24 +1238,18 @@ const PptModal = ({ projectData, project }) => {
 
     setSelectedHeaders(initialSelectedHeaders);
     setSelectedItems(uniqueInitialSelectedItems);
-    console.log("Initial selected headers:", initialSelectedHeaders);
-    console.log("Initial selected items:", uniqueInitialSelectedItems);
   }, [projectData]);
 
   useEffect(() => {
-    console.log("Selected headers updated:", selectedHeaders);
     const filteredSelectedHeaders = selectedHeaders.filter((header) => {
       return projectData.some((category) => category.title === header);
     });
     setSelectedHeaders(filteredSelectedHeaders);
-    console.log("Filtered selected headers:", filteredSelectedHeaders);
   }, [selectedItems]);
 
   const handleHeaderCheck = (headerName, isChecked) => {
     if (isChecked) {
       setSelectedHeaders((prevHeaders) => [...prevHeaders, headerName]);
-      console.log("Header added:", headerName);
-      console.log("Header removed:", headerName);
     } else {
       setSelectedHeaders((prevHeaders) =>
         prevHeaders.filter((header) => header !== headerName)
@@ -851,23 +1260,19 @@ const PptModal = ({ projectData, project }) => {
   const handleItemCheck = (itemName, isChecked) => {
     if (isChecked) {
       setSelectedItems((prevItems) => [...prevItems, itemName]);
-      console.log("Item added:", itemName);
     } else {
       setSelectedItems((prevItems) =>
         prevItems.filter((item) => item !== itemName)
       );
-      console.log("Item removed:", itemName);
     }
   };
 
   const uploadReport = async (fileDataABuffer, reportName, filePath) => {
     try {
-      // Check if file size exceeds 200MB
-      const fileLength = fileDataABuffer.byteLength
-      console.log(fileLength)
-      const fileInMB = (fileLength / (1000000)).toFixed(2); //Report size using base-10 (decimal) MB instead of base-2 (binary)
-      console.log(fileInMB)
-      if ( fileInMB > 200) {
+      const fileLength = fileDataABuffer.byteLength;
+      const fileInMB = (fileLength / (1000000)).toFixed(2);
+      
+      if (fileInMB > 200) {
         setTimeout(() => {
           Alert.alert(
             "File Size Exceeded",
@@ -896,7 +1301,6 @@ const PptModal = ({ projectData, project }) => {
       setLoadingModal(true);
       const fileUploadUrl = `https://solarvest.sharepoint.com/sites/ProjectDevelopment/_api/web/GetFolderByServerRelativeUrl(\'/sites/ProjectDevelopment/ListofImage/${project}\')/Files/add(url=\'${reportName}\',overwrite=true)`;
 
-
       const [accessToken, formDigest] = await retrieveAccessToken();
 
       const headers = {
@@ -915,23 +1319,22 @@ const PptModal = ({ projectData, project }) => {
         maxContentLength: Infinity,       // ← Important
         timeout: 10 * 60 * 1000,          // ← Optional: 10 min timeout
         onUploadProgress: (progressEvent) => {
-          const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-          console.log(`Upload Progress: ${percent}%`);
+          if (progressEvent.total && progressEvent.total > 0) {
+            const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+          }
         },
         validateStatus: function (status) {
-          console.log('Response status from SharePoint:', status);
           return true; // prevent throwing error for non-200
         },
       });
 
-      // console.log(response.status)
-      if (response.data.d.Exists) {
-        console.log("Report Uploaded to Sharepoint: " + reportName);
+      if (response?.data?.d?.Exists) {
         Alert.alert("PowerPoint Report Uploaded Successfully!", reportName);
         return true;
       }
+      return false;
     } catch (error) {
-      console.log("Error Uploading Data in Sharepoint", error);
+      console.error('[PPT] Upload error', { error: error.message });
       // Alert.alert("Error Uploading Data in Sharepoint", error?.message || String(error));
       Alert.alert(
         "File Size Exceeded",
@@ -958,17 +1361,13 @@ const PptModal = ({ projectData, project }) => {
   };
 
   const generatePowerpoint = async () => {
-    console.log("Generating PowerPoint...");
     await generateTemplate();
-    console.log("PowerPoint generated");
   };
 
   useEffect(() => {
-    console.log("modalVisible:", modalVisible);
   }, [modalVisible]);
 
   useEffect(() => {
-    console.log("loadingModal:", loadingModal);
   }, [loadingModal]);
 
   const writeFileInChunks = async (
@@ -982,49 +1381,48 @@ const PptModal = ({ projectData, project }) => {
       try {
         await RNFS.appendFile(filePath, chunk, "base64");
       } catch (error) {
-        console.error("Error writing chunk to file:", error);
         throw error;
       }
     }
   };
 
   const writeLargePPTInChunks = async (filePath, arrayBuffer, chunkSize = 1024 * 1024)=> {
+    if (!arrayBuffer || arrayBuffer.byteLength === 0) {
+      throw new Error('Cannot write empty arrayBuffer');
+    }
+    
+    if (!filePath) {
+      throw new Error('File path is required');
+    }
+    
     const uint8Array = new Uint8Array(arrayBuffer);
     const totalSize = uint8Array.length;
-    console.log(`Starting to write file: ${filePath}, Total size: ${totalSize} bytes, Chunks: ${Math.ceil(totalSize / chunkSize)}`);
     
     // Ensure directory exists
-    const dirPath = filePath.substring(0, filePath.lastIndexOf('/'));
-    const dirExists = await RNFS.exists(dirPath);
-    if (!dirExists) {
-      console.log(`Directory does not exist, creating: ${dirPath}`);
-      await RNFS.mkdir(dirPath);
+    const lastSlashIndex = filePath.lastIndexOf('/');
+    if (lastSlashIndex > 0) {
+      const dirPath = filePath.substring(0, lastSlashIndex);
+      const dirExists = await RNFS.exists(dirPath);
+      if (!dirExists) {
+        await RNFS.mkdir(dirPath);
+      }
     }
     
     // Clear file before writing (start fresh)
     try {
       await RNFS.writeFile(filePath, '', 'utf8');
     } catch (error) {
-      console.warn("Warning: Could not clear file before writing:", error);
+      // Ignore if file doesn't exist yet
     }
     
-    let bytesWritten = 0;
     for (let i = 0; i < uint8Array.length; i += chunkSize) {
       const chunk = uint8Array.slice(i, i + chunkSize);
-      const base64Chunk = Buffer.from(chunk).toString('base64');
-      try {
-        await RNFS.appendFile(filePath, base64Chunk, 'base64');
-        bytesWritten += chunk.length;
-        if ((i / chunkSize) % 10 === 0 || i + chunkSize >= totalSize) {
-          console.log(`Progress: ${bytesWritten}/${totalSize} bytes (${((bytesWritten / totalSize) * 100).toFixed(1)}%)`);
-        }
-      } catch (error) {
-        console.error(`Error writing chunk ${i / chunkSize + 1} to file:`, error);
-        console.error(`Error details:`, JSON.stringify(error, null, 2));
-        throw error;
+      if (!chunk || chunk.length === 0) {
+        continue;
       }
+      const base64Chunk = Buffer.from(chunk).toString('base64');
+      await RNFS.appendFile(filePath, base64Chunk, 'base64');
     }
-    console.log(`File write completed. Total bytes written: ${bytesWritten}`);
   }
 
   const generateTemplate = async () => {
@@ -1033,6 +1431,7 @@ const PptModal = ({ projectData, project }) => {
     try {
       const storedDataJSON = await AsyncStorage.getItem("imageCategory");
       const storedData = storedDataJSON ? JSON.parse(storedDataJSON) : [];
+      
       const filteredData = storedData.filter((item) => {
         const isItemChecked = selectedItems.includes(
           `${item.category}No. ${item.categoryId}`
@@ -1058,11 +1457,101 @@ const PptModal = ({ projectData, project }) => {
 
         return isItemChecked && matchProject && isNotDeleted;
       });
+      
+      console.log('[PPT] Filtered data', { count: filteredData.length });
+
+      // Validate image paths exist before generation
+      const validatedData = [];
+      const invalidImages = [];
+      console.log('[PPT] Starting image validation');
+      
+      for (const item of filteredData) {
+        if (!item?.picture) {
+          const categoryLabel = item?.category || 'Unknown';
+          const categoryIdLabel = item?.categoryId || 'Unknown';
+          invalidImages.push(`${categoryLabel} - No. ${categoryIdLabel}`);
+          continue;
+        }
+
+        if (item.picture.startsWith('file://')) {
+          const filePath = item.picture.replace('file://', '');
+          try {
+            const fileExists = await RNFS.exists(filePath);
+            if (!fileExists) {
+              const categoryLabel = item?.category || 'Unknown';
+              const categoryIdLabel = item?.categoryId || 'Unknown';
+              invalidImages.push(`${categoryLabel} - No. ${categoryIdLabel}`);
+              continue;
+            }
+          } catch {
+            const categoryLabel = item?.category || 'Unknown';
+            const categoryIdLabel = item?.categoryId || 'Unknown';
+            invalidImages.push(`${categoryLabel} - No. ${categoryIdLabel}`);
+            continue;
+          }
+        }
+        
+        validatedData.push(item);
+      }
+
+      if (invalidImages.length > 0) {
+        const invalidCount = invalidImages.length;
+        const validCount = validatedData.length;
+        const invalidItems = filteredData.filter(item => !validatedData.some(valid => valid.id === item.id));
+
+        const userChoice = await new Promise((resolve) => {
+          Alert.alert(
+            "Some Images Cannot Be Used",
+            `${invalidCount} image(s) have invalid or missing files:\n\n${invalidImages.slice(0, 5).join('\n')}${invalidImages.length > 5 ? `\n...and ${invalidImages.length - 5} more` : ''}\n\n${validCount} valid image(s) will be included.\n\nWould you like to remove these invalid images?`,
+            [
+              {
+                text: "Cancel",
+                style: "cancel",
+                onPress: () => {
+                  setLoadingModal(false);
+                  resolve(false);
+                }
+              },
+              {
+                text: "Remove Invalid Images",
+                style: "destructive",
+                onPress: async () => {
+                  try {
+                    const allDataJSON = await AsyncStorage.getItem("imageCategory");
+                    const allData = allDataJSON ? JSON.parse(allDataJSON) : [];
+                    const updatedData = allData.map(item => {
+                      const isInvalid = invalidItems.some(invalid => invalid.id === item.id);
+                      return isInvalid ? { ...item, opt: "delete" } : item;
+                    });
+                    await AsyncStorage.setItem("imageCategory", JSON.stringify(updatedData));
+                  } catch {}
+                  resolve(true);
+                }
+              },
+              {
+                text: "Continue",
+                onPress: () => resolve(true)
+              }
+            ]
+          );
+        });
+
+        if (!userChoice) return;
+      }
+
+      if (validatedData.length === 0) {
+        Alert.alert(
+          "No Valid Images",
+          "All selected images have invalid or missing files. Please check your images and try again."
+        );
+        setLoadingModal(false);
+        return;
+      }
 
       let ppt = new pptxgen();
 
       // Sort data by category order (from categoryOrderMap) and then by categoryId within each category
-      const sortedData = filteredData.sort((a, b) => {
+      const sortedData = validatedData.sort((a, b) => {
         // First, sort by category order (using categoryOrderMap)
         const orderA = categoryOrderMap[a.category] !== undefined ? categoryOrderMap[a.category] : 9999;
         const orderB = categoryOrderMap[b.category] !== undefined ? categoryOrderMap[b.category] : 9999;
@@ -1098,7 +1587,6 @@ const PptModal = ({ projectData, project }) => {
       });
       
       // Log sequence for verification
-      console.log("=== PPT SEQUENCE VERIFICATION ===");
       const sortedCategories = Object.keys(groupedData).sort((catA, catB) => {
         const orderA = categoryOrderMap[catA] || 9999;
         const orderB = categoryOrderMap[catB] || 9999;
@@ -1106,10 +1594,8 @@ const PptModal = ({ projectData, project }) => {
       });
       sortedCategories.forEach((category, index) => {
         const items = groupedData[category];
-        console.log(`${index + 1}. ${category} (Order: ${categoryOrderMap[category] || 'Unknown'}) - ${items.length} items`);
       });
-      console.log("=== END SEQUENCE VERIFICATION ===");
-      ttlCat =  Object.keys(groupedData).length;
+      ttlCat = Object.keys(groupedData).length;
 
       const firstPage = ppt.addSlide();
       firstPage.background = { data: backgroundImg };
@@ -1188,7 +1674,6 @@ const PptModal = ({ projectData, project }) => {
       });
 
       for (const [category, items] of sortedGroupedEntries) {
-        // Add a new slide for the category
         const categorySlide = ppt.addSlide();
         categorySlide.background = { data: titleBackgroundImg };
         categorySlide.addText(`PROPOSED ${category.toUpperCase()}`, {
@@ -1326,53 +1811,21 @@ const PptModal = ({ projectData, project }) => {
         // }
 
         // Iterate over the items under the current category to create slides
-        for (const item of items) {
-          // console.log(item)
-          const { categoryId, picture, description, orientation } = item;
-          const itemSlide = ppt.addSlide();
+          for (const item of items) {
+            // Validate required properties
+            if (!item?.categoryId || !item?.picture) {
+              console.warn('[PPT] Skipping item with missing required properties', item);
+              continue;
+            }
+            
+            const { categoryId, picture, description, orientation } = item;
+            const itemSlide = ppt.addSlide();
 
           let imageWidth = 0;
           let imageHeight = 0;
           let aspectRatio = 1;
 
           // console.log("orientation", orientation);
-
-          if (picture) {
-            console.log(picture);
-            // Get the image size first
-            const imageDimensions = await new Promise((resolve, reject) => {
-              Image.getSize(
-                picture,
-                (width, height) => resolve({ width, height }),
-                (error) => reject(error)
-              );
-            });
-
-            const { width, height } = imageDimensions;
-
-            // Calculate aspect ratio
-            aspectRatio = width / height;
-
-            // Set a maximum width or height
-            const maxWidth = 6.5; // Example max width in inches (adjust accordingly)
-            const maxHeight = 4.5; // Example max height in inches (adjust accordingly)
-
-            // Scale the image proportionally
-            if (width > height) {
-              // Scale by width
-              imageWidth = maxWidth;
-              imageHeight = maxWidth / aspectRatio;
-              if (imageHeight > maxHeight) {
-                imageHeight = maxHeight;
-              }
-            } else {
-              // Scale by height
-              imageHeight = maxHeight;
-              imageWidth = maxHeight * aspectRatio;
-            }
-          } else {
-            console.log("No image path found in AsyncStorage");
-          }
 
           itemSlide.addText(`${category} - No. ${categoryId}`, {
             x: 0.2,
@@ -1388,7 +1841,10 @@ const PptModal = ({ projectData, project }) => {
 
           // Add photo items
           let yVal = 1;
-          photoItems.forEach((item) => {
+          if (!Array.isArray(photoItems)) {
+            console.warn('[PPT] photoItems is not an array, skipping');
+          } else {
+            photoItems.forEach((item) => {
             if (item.color) {
               itemSlide.addShape(ppt.ShapeType.rect, {
                 fill: { color: item.color, transparency: 80 },
@@ -1415,7 +1871,7 @@ const PptModal = ({ projectData, project }) => {
                 line: { color: item.shape, width: 1.5 },
               });
             }
-            itemSlide.addText(item.text, {
+            itemSlide.addText(item.text || "", {
               x: 0.4,
               y: yVal,
               w: "20%",
@@ -1426,6 +1882,7 @@ const PptModal = ({ projectData, project }) => {
             });
             yVal += 0.25;
           });
+          }
 
           // Add description as text
           itemSlide.addText(description || "No Description", {
@@ -1503,21 +1960,41 @@ const PptModal = ({ projectData, project }) => {
           // });
 
           if (picture) {
+            try {
+              if (picture.startsWith('file://')) {
+                const filePath = picture.replace('file://', '');
+                const fileExists = await RNFS.exists(filePath);
+                if (!fileExists) continue;
+              }
+
             const imageDimensions = await new Promise((resolve, reject) => {
               Image.getSize(
                 picture,
-                (width, height) => resolve({ width, height }),
+                  (width, height) => {
+                    if (!width || !height || width <= 0 || height <= 0) {
+                      reject(new Error(`Invalid image dimensions: ${width}x${height}`));
+                      return;
+                    }
+                    resolve({ width, height });
+                  },
                 (error) => reject(error)
               );
             });
 
             const { width, height } = imageDimensions;
+              
+              if (!width || !height || width <= 0 || height <= 0) {
+                continue;
+              }
+
             const aspectRatio = width / height;
 
-            const maxWidth = 6.5; // Maximum width in inches
-            const maxHeight = 4.5; // Maximum height in inches
+              if (aspectRatio === 0 || !isFinite(aspectRatio)) {
+                continue;
+              }
 
-            let imageWidth, imageHeight;
+              const maxWidth = 6.5;
+              const maxHeight = 4.5;
 
             if (width > height) {
               imageWidth = maxWidth;
@@ -1535,25 +2012,22 @@ const PptModal = ({ projectData, project }) => {
               }
             }
 
-            console.log("imageDimensions inches W x H ->", `${imageWidth} x ${imageHeight}`);
-
             itemSlide.addImage({
               path: picture,
-              x: (10 - imageWidth) / 2 + 1, // Center horizontally (10 is the default slide width in inches)
-              y: (5.63 - imageHeight) / 2, // Center vertically (5.63 is the default slide height in inches)
-              // x: 3,
-              // y: 1,
+              x: (10 - imageWidth) / 2 + 1,
+              y: (5.63 - imageHeight) / 2,
               w: imageWidth,
               h: imageHeight,
-              sizing: {
-                type: "contain",
-              },
+              sizing: { type: "contain" },
             });
+            } catch (error) {
+              console.error('[PPT] Error processing image', { categoryId, error: error.message });
+              continue;
+            }
           }
         }
       }
       
-      console.log("Total Category and subitems:", `${ttlCat} & ${ttlCatItem}`);
 
       const additionalNoteSlide = ppt.addSlide();
       additionalNoteSlide.background = { data: mainBackground };
@@ -1593,24 +2067,29 @@ const PptModal = ({ projectData, project }) => {
       footerSlide.background = { data: mainBackground };
 
       let startTime = Date.now();
-      // const base64 = await ppt.write("base64");
-      const arrayBuffer = await ppt.write("arraybuffer");
-      let endTime = Date.now();
-      console.log("ppt.write took", (endTime - startTime) / 1000, "seconds");
-
-      const reportName = `${project}_${new Date().getTime()}.pptx`;
-      var filePath;
-      
-      // Always save to app's document directory first (guaranteed to work)
-      // On Android 10+, Downloads folder requires MediaStore API to be visible in file manager
-      filePath = `${RNFS.DocumentDirectoryPath}/${reportName}`;
-      
-      console.log(`File path PowerPoint before save: ${filePath}`);
-      console.log(`Platform: ${Platform.OS}, DocumentDirectoryPath: ${RNFS.DocumentDirectoryPath}`);
-      if (Platform.OS === "android") {
-        console.log(`DownloadDirectoryPath: ${RNFS.DownloadDirectoryPath}`);
+      let arrayBuffer;
+      try {
+        arrayBuffer = await ppt.write("arraybuffer");
+        if (!arrayBuffer || arrayBuffer.byteLength === 0) {
+          throw new Error('Failed to generate PowerPoint: empty arraybuffer');
+        }
+        const endTime = Date.now();
+        const sizeMB = (arrayBuffer.byteLength / (1024 * 1024)).toFixed(2);
+        console.log('[PPT] Arraybuffer generated', { sizeMB, timeMs: endTime - startTime });
+        
+        // Clear ppt object from memory after writing to help GC
+        ppt = null;
+      } catch (error) {
+        console.error('[PPT] Error generating arraybuffer', { error: error.message });
+        // Clear ppt even on error to help GC
+        ppt = null;
+        throw error;
       }
 
+      const reportName = `${project}_${new Date().getTime()}.pptx`;
+      const filePath = `${RNFS.DocumentDirectoryPath}/${reportName}`;
+
+      let endTime;
       startTime = Date.now();
       
       try {
@@ -1624,32 +2103,24 @@ const PptModal = ({ projectData, project }) => {
         }
         
         const fileStats = await RNFS.stat(filePath);
-        console.log(`File saved successfully at: ${filePath}`);
-        console.log(`File size: ${fileStats.size} bytes`);
         
         // On Android, automatically attempt to save to Downloads folder
         // This uses MediaStore API and makes the file visible in file manager
         if (Platform.OS === "android") {
           try {
-            console.log("Attempting to save file to Downloads folder (visible in file manager)...");
             const saved = await saveToDownloads(filePath, reportName);
             if (saved) {
-              console.log("File successfully saved to Downloads folder!");
             } else {
-              console.log("File saved to app directory. User can use 'Save to Downloads' option to copy it.");
             }
           } catch (downloadsError) {
-            console.log("Could not automatically save to Downloads, but file is saved in app directory:", downloadsError.message);
             // File is still accessible at filePath for upload
           }
         }
       } catch (error) {
-        console.error("Error during file write:", error);
         throw error;
       }
       
       endTime = Date.now();
-      console.log("pptWriteChunks took", (endTime - startTime) / 1000, "seconds");
 
       setLoadingModal(false);
       
@@ -1675,10 +2146,13 @@ const PptModal = ({ projectData, project }) => {
             {
               text: "Upload to Sharepoint",
               onPress: async () => {
-                startTime = Date.now();
-                await uploadReport(arrayBuffer, reportName, filePath);
-                endTime = Date.now();
-                console.log("uploadReport took", (endTime - startTime) / 1000, "seconds");
+                // Read file for upload to avoid keeping arrayBuffer in memory long-term
+                const uploadStartTime = Date.now();
+                const fileData = await RNFS.readFile(filePath, 'base64');
+                const uploadBuffer = Buffer.from(fileData, 'base64').buffer;
+                await uploadReport(uploadBuffer, reportName, filePath);
+                const uploadEndTime = Date.now();
+                console.log("uploadReport took", (uploadEndTime - uploadStartTime) / 1000, "seconds");
               },
             },
             {
@@ -1689,8 +2163,19 @@ const PptModal = ({ projectData, project }) => {
         );
       }, 300);
     } catch (error) {
-      console.error("Error saving the PowerPoint file:", error);
-      Alert.alert("Error saving the PowerPoint file", error?.message || String(error));
+      const errorMessage = error?.message || String(error);
+      
+      // Provide more helpful error messages
+      let userMessage = "Error saving the PowerPoint file";
+      if (errorMessage.includes("getSize")) {
+        userMessage = "Some images could not be processed. The PowerPoint was generated but may be missing some images.\n\n" + 
+                      "This can happen if image files were deleted or moved. Please check your images and try again.";
+      } else if (errorMessage.includes("Failed to getSize")) {
+        userMessage = "Some image files are missing or inaccessible. The PowerPoint was generated but may be missing some images.\n\n" +
+                      "Please ensure all images are still available and try again.";
+      }
+      
+      Alert.alert("Error saving the PowerPoint file", userMessage + "\n\nTechnical details: " + errorMessage);
       setLoadingModal(false);
     }
   };
@@ -2090,12 +2575,60 @@ function App() {
           setLogin(false);
         }
       } catch (error) {
-        console.error("Error checking login status:", error);
+      }
+    };
+
+    // Clean up invalid image paths (cache/tmp files that no longer exist)
+    const cleanupInvalidImages = async () => {
+      try {
+        const storedDataJSON = await AsyncStorage.getItem("imageCategory");
+        if (!storedDataJSON) return;
+        
+        const storedData = JSON.parse(storedDataJSON);
+        const cleanedData = [];
+        let removedCount = 0;
+        
+        for (const item of storedData) {
+          if (!item.picture) {
+            removedCount++;
+            continue;
+          }
+          
+          // Check if path is in cache/tmp directory (will be cleaned up by iOS)
+          if (item.picture.includes('/tmp/') || item.picture.includes('/Caches/')) {
+            removedCount++;
+            continue;
+          }
+          
+          // Check if file exists (for local file paths)
+          if (item.picture.startsWith('file://')) {
+            const filePath = item.picture.replace('file://', '');
+            try {
+              const fileExists = await RNFS.exists(filePath);
+              if (!fileExists) {
+                removedCount++;
+                continue;
+              }
+            } catch {
+              removedCount++;
+              continue;
+            }
+          }
+          
+          cleanedData.push(item);
+        }
+        
+        if (removedCount > 0) {
+          await AsyncStorage.setItem("imageCategory", JSON.stringify(cleanedData));
+        }
+      } catch (error) {
+        // Silent cleanup - don't show errors to user
       }
     };
 
     checkLoginStatus();
     loadSettings();
+    cleanupInvalidImages();
   }, []);
 
   /* CODING MADE BY FAAEZAMIRUDDIN */
@@ -2112,11 +2645,9 @@ function App() {
         const loadImageBase64 = async (capturedImageURI) => {
           try {
             const base64Data = await RNFS.readFile(capturedImageURI, "base64");
-            console.log("base64Data:-----_---__------->>>> ", base64Data);
             
             return base64Data;
           } catch (error) {
-            console.error("Error converting image to base64:", error);
           }
         };
 
@@ -2145,10 +2676,8 @@ function App() {
               headers: headers,
             });
             if (response.data.d.Exists) {
-              console.log("Image Uploaded to Sharepoint: " + imgName);
               return true;
             }
-            console.log(response.data.d.Exists);
           } catch (error) {
             console.log(
               "Error Uploading Data in Sharepoint",
@@ -2206,7 +2735,6 @@ function App() {
                   // console.log("Folder created: " + response.data.d.Exists);
                   // folderExist = response.data.d.Exists;
                 } catch (error) {
-                  console.log(error);
                   return false;
                 }
               }
@@ -2247,10 +2775,6 @@ function App() {
 
         const uploadProjectFolder = async (AccessToken, formDigest) => {
           try {
-            console.log(
-              "entered to uploadProjectFolder############################",
-              error
-            );
             const existingProjects = await AsyncStorage.getItem("projectName");
             const ExistingProjects = existingProjects
               ? JSON.parse(existingProjects)
@@ -2274,16 +2798,10 @@ function App() {
                     "X-RequestDigest": formDigest,
                   },
                 });
-                console.log("project created:" + projectName);
               } catch (error) {
-                console.log(
-                  "error uploading Folder############################",
-                  error
-                );
               }
             });
           } catch (error) {
-            console.log("error uploading Folder");
           }
         };
 
@@ -2294,7 +2812,11 @@ function App() {
           const storedDataJSON = await AsyncStorage.getItem("imageCategory");
           const storedData = storedDataJSON ? JSON.parse(storedDataJSON) : [];
           const filteredData = storedData.filter((item) => item.opt !== null);
-          // console.log("filtered Data:", filteredData);
+          
+          const photosToUpload = filteredData.filter(item => item.opt === "create").length;
+          console.log(`📤 Background upload: ${photosToUpload} photo(s) to upload`);
+          
+          let uploadedCount = 0;
           await Promise.all(
             filteredData.map(async (item) => {
               if (item.opt === "create") {
@@ -2317,6 +2839,9 @@ function App() {
                       formDigest
                     );
                     if (imgUploaded) {
+                      uploadedCount++;
+                      console.log(`✅ Background upload: ${uploadedCount}/${photosToUpload} photos uploaded`);
+                      
                       const storedDataJSON = await AsyncStorage.getItem(
                         "imageCategory"
                       );
@@ -2344,10 +2869,8 @@ function App() {
                       if (currentDate - createdDate > sevenDays) {
                         RNFS.unlink(item.picture)
                           .then(() => {
-                            console.log("FILE DELETED from local");
                           })
                           .catch((err) => {
-                            console.log(err.message);
                           });
                         storedData = storedData.filter(
                           (dataItem) => dataItem.id !== item.id
@@ -2364,7 +2887,6 @@ function App() {
 
                         if (indexToUpdate !== -1) {
                           storedData[indexToUpdate].opt = "";
-                          console.log("storedData: " + storedData);
                           try {
                             await AsyncStorage.setItem(
                               "imageCategory",
@@ -2377,12 +2899,10 @@ function App() {
                             );
                           }
                         } else {
-                          console.log("Item not found to update the operation");
                         }
                       }
                     }
                   } catch (error) {
-                    console.log("error uploading to sharepoint", error);
                   }
                 }
               } else if (item.opt === "delete") {
@@ -2411,32 +2931,20 @@ function App() {
                       );
                       RNFS.unlink(item.picture)
                         .then(() => {
-                          console.log("FILE DELETED from local");
                         })
                         // `unlink` will throw an error, if the item to unlink does not exist
                         .catch((err) => {
-                          console.log(err.message);
                         });
                     } catch (error) {
-                      console.log(
-                        "Error updating AsyncStorage after item deletion: ",
-                        error
-                      );
                     }
                   } else {
-                    console.log(
-                      "Item not found or already marked for deletion"
-                    );
                   }
-                  console.log("File Deleted: " + response);
                 } catch (error) {
-                  console.log(error);
                 }
               }
             })
           );
         } catch (error) {
-          console.log("Uploading folder erros################", error);
         }
         BackgroundFetch.finish(taskId);
       },
@@ -2448,7 +2956,6 @@ function App() {
       }
     );
 
-    console.log("[BackgroundFetch] configure status: ", status);
   };
 
   useEffect(() => {

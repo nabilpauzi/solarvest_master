@@ -37,6 +37,9 @@ export const retrieveAccessToken = async () => {
   };
   try {
     const storedTokenJSON = await AsyncStorage.getItem("sharepointToken");
+    if (!storedTokenJSON) {
+      throw new Error("Token not found");
+    }
     const storedToken = JSON.parse(storedTokenJSON);
     if (!storedToken) {
       throw new Error("Token not found");
@@ -53,7 +56,6 @@ export const retrieveAccessToken = async () => {
       return [storedToken.accessToken, storedToken.formDigest];
     }
   } catch (error) {
-    // console.log(error.response.data);
     try {
       const response = await axios({
         method: "POST",
@@ -61,7 +63,7 @@ export const retrieveAccessToken = async () => {
         headers: headers,
         data: body,
       });
-      if (response.data.access_token) {
+      if (response?.data?.access_token) {
         try {
           const digestResponse = await axios({
             method: "POST",
@@ -73,7 +75,7 @@ export const retrieveAccessToken = async () => {
             },
           });
 
-          if (digestResponse) {
+          if (digestResponse?.data?.FormDigestValue) {
             const tokens = {
               accessToken: response.data.access_token,
               formDigest: digestResponse.data.FormDigestValue.split(",")[0],
@@ -94,11 +96,11 @@ export const retrieveAccessToken = async () => {
             ];
           }
         } catch (error) {
-          console.log(error);
+          // Handle digest error silently
         }
       }
     } catch (error) {
-      console.log(error.response.data);
+      // Handle token error silently - error.response may not exist
     }
   }
 };
@@ -117,16 +119,15 @@ export const checkFolderExist = async (folderUri,project) => {
       },
     });
 
-    console.log("File Exist: " + response.data.d.Exists);
-    return response.data.d.Exists;
+    if (response?.data?.d?.Exists !== undefined) {
+      console.log("File Exist: " + response.data.d.Exists);
+      return response.data.d.Exists;
+    }
+    return false;
   } catch (error) {
-    console.log(
-      "checkFolderExist//////////////////",
-      error.response.data.error.code
-    );
     // *********Create sharepoint folder path***********
     if (
-      error.response.data.error.code ==
+      error?.response?.data?.error?.code ==
       "-2147024894, System.IO.FileNotFoundException"
     ) {
       try {
@@ -162,10 +163,12 @@ export const checkFolderExist = async (folderUri,project) => {
               },
             });
             parentFolder += "/" + path;
-            console.log("Folder created: " + response.data.d.Exists);
-            folderExist = response.data.d.Exists;
+            if (response?.data?.d?.Exists !== undefined) {
+              console.log("Folder created: " + response.data.d.Exists);
+              folderExist = response.data.d.Exists;
+            }
           } catch (error) {
-            console.log(error.response.data);
+            // Handle folder creation error silently
             return false;
           }
         }

@@ -116,39 +116,107 @@ export const CategoryScreen = ({ route, navigation }) => {
   const [categoryData, setCategoryData] = useState([]);
 
   /// Select Image from gallery
-  const openImagePicker = (index) => {
+  const openImagePicker = async (index) => {
     const options = {
       mediaType: "photo",
-      includeBase64: true,
+      includeBase64: false,
       maxHeight: 2000,
       maxWidth: 2000,
     };
 
-    launchImageLibrary(options, (response) => {
-      console.log("response  gallery............", response);
-
+    launchImageLibrary(options, async (response) => {
       if (response.didCancel) {
-        console.log("User cancelled image picker");
+        return;
       } else if (response.error) {
-        console.log("Image picker error: ", response.error);
+        return;
       } else {
-        // let imageUri = (response.base64 || response.assets?.[0]?.base64);
-        let imageUri = response.uri || response.assets?.[0]?.uri;
-        setImageSections((prevImageSections) => {
-          prevImageSections[index] = {
-            id: generateUniqueId(),
-            project: project,
-            category: category,
-            categoryId: categoryId,
-            picture: imageUri,
-            description: "",
-            opt: "create",
-          };
-          return [...prevImageSections];
-        });
+        try {
+          let imageUri = response.uri || response.assets?.[0]?.uri;
+          
+          // Always copy image to DocumentDirectory to prevent cache cleanup issues
+          // This ensures images survive app updates/reinstalls
+          let sourcePath = imageUri;
+          if (sourcePath.startsWith('file://')) {
+            sourcePath = sourcePath.replace('file://', '');
+          } else if (sourcePath.startsWith('ph://') || sourcePath.startsWith('content://')) {
+            // For iOS Photos library or Android content URIs, read as base64 first
+            const base64Data = await RNFS.readFile(imageUri, 'base64');
+            const fileName = `${new Date().getTime()}.jpg`;
+            const destPath = `${RNFS.DocumentDirectoryPath}/${fileName}`;
+            await RNFS.writeFile(destPath, base64Data, 'base64');
+            
+            const permanentPath = `file://${destPath}`;
+            setImageSections((prevImageSections) => {
+              prevImageSections[index] = {
+                id: generateUniqueId(),
+                project: project,
+                category: category,
+                categoryId: categoryId,
+                picture: permanentPath,
+                description: "",
+                opt: "create",
+              };
+              return [...prevImageSections];
+            });
+            return;
+          }
+          
+          // For file:// paths, copy directly
+          const fileName = `${new Date().getTime()}.jpg`;
+          const destPath = `${RNFS.DocumentDirectoryPath}/${fileName}`;
+          
+          // Check if source is already in DocumentDirectory
+          if (sourcePath.startsWith(RNFS.DocumentDirectoryPath)) {
+            // Already in DocumentDirectory, use as-is
+            const permanentPath = `file://${sourcePath}`;
+            setImageSections((prevImageSections) => {
+              prevImageSections[index] = {
+                id: generateUniqueId(),
+                project: project,
+                category: category,
+                categoryId: categoryId,
+                picture: permanentPath,
+                description: "",
+                opt: "create",
+              };
+              return [...prevImageSections];
+            });
+          } else {
+            // Copy to DocumentDirectory
+            await RNFS.copyFile(sourcePath, destPath);
+            const permanentPath = `file://${destPath}`;
+            
+            setImageSections((prevImageSections) => {
+              prevImageSections[index] = {
+                id: generateUniqueId(),
+                project: project,
+                category: category,
+                categoryId: categoryId,
+                picture: permanentPath,
+                description: "",
+                opt: "create",
+              };
+              return [...prevImageSections];
+            });
+          }
+        } catch (error) {
+          // Fallback to original URI if copy fails
+          let imageUri = response.uri || response.assets?.[0]?.uri;
+          setImageSections((prevImageSections) => {
+            prevImageSections[index] = {
+              id: generateUniqueId(),
+              project: project,
+              category: category,
+              categoryId: categoryId,
+              picture: imageUri,
+              description: "",
+              opt: "create",
+            };
+            return [...prevImageSections];
+          });
+        }
       }
     });
-    console.log("gallery data ............");
   };
 
   // Function to request camera permission
@@ -553,17 +621,14 @@ export const CategoryScreen = ({ route, navigation }) => {
 
           if (indexToUpdate !== -1) {
             storedData[indexToUpdate].opt = "";
-            console.log("storedData: " + storedData);
             try {
               await AsyncStorage.setItem(
                 "imageCategory",
                 JSON.stringify(storedData)
               );
             } catch (error) {
-              console.log("Error updating the 'opt' key: ", error);
+              // Silent fail
             }
-          } else {
-            console.log("Item not found to update the operation");
           }
         } catch (error) {
           console.log("error in updating the operation of he object");
@@ -619,8 +684,15 @@ export const CategoryScreen = ({ route, navigation }) => {
       const storedDataJSON = await AsyncStorage.getItem("imageCategory");
       const storedData = storedDataJSON ? JSON.parse(storedDataJSON) : [];
 
+      const photoCount = updatedImageSections.length;
+      console.log(`📸 Saving ${photoCount} photo(s) to local storage`);
+      
       storedData.push(...updatedImageSections);
       await AsyncStorage.setItem("imageCategory", JSON.stringify(storedData));
+      
+      const totalPhotos = storedData.length;
+      console.log(`✅ Total photos in storage: ${totalPhotos}`);
+      
       await AsyncStorage.removeItem("imageSection");
       navigation.goBack();
 
@@ -634,18 +706,24 @@ export const CategoryScreen = ({ route, navigation }) => {
       console.log("project check 3$$$$$$$$$$$$$$$$$$$$$$$", project);
 
       if (folderExist) {
+        const totalToUpload = updatedImageSections.length;
+        console.log(`📤 Uploading ${totalToUpload} photo(s) to SharePoint`);
+        
+        let uploadedCount = 0;
         updatedImageSections.forEach(async (item, idx) => {
-          console.log("project check 4$$$$$$$$$$$$$$$$$$$$$$$", item.project);
           try {
             const imgName = `${item.id}_${item.project}_${item.category}_${item.categoryId}_${item.description}.jpg`;
-            await uploadImageSharepoint(
+            const success = await uploadImageSharepoint(
               item.picture,
               imgName,
               folderUri,
               item.id
             );
-
-            // await sendDataToSharepoint(item.picture, parseInt(item.id), item.category.toString(), parseInt(item.categoryId), item.description.toString());
+            
+            if (success) {
+              uploadedCount++;
+              console.log(`✅ Uploaded ${uploadedCount}/${totalToUpload} photos`);
+            }
           } catch (error) {
             console.error("Error sending data to SharePoint:", error);
           }
