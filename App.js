@@ -358,9 +358,7 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
       if (isMountedRef.current) {
         setProjectData(formatted);
       }
-    } catch (error) {
-      console.error('[HomeScreen] Error in refreshProjectData', { error: error.message });
-    }
+    } catch (error) {}
   };
 
   // Helper: Download single image from SharePoint
@@ -478,20 +476,16 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
   useEffect(() => {
     // Mark component as mounted
     isMountedRef.current = true;
-    console.log('[HomeScreen] Component mounted, starting data fetch', { project, isMounted: isMountedRef.current });
     
     const fetchData = async () => {
       try {
         // Check if component is still mounted before starting
         if (!isMountedRef.current) {
-          console.log('[HomeScreen] Component unmounted before fetchData started, aborting');
           return;
         }
         
-        console.log('[HomeScreen] Starting fetchData', { project });
         const [accessToken, formDigest] = await retrieveAccessToken();
         downloadCancelRef.current = false;
-        console.log('[HomeScreen] Access token retrieved, starting SharePoint fetch');
 
         const storedDataJSON = await AsyncStorage.getItem("sharePointData");
 
@@ -519,12 +513,31 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
         const existingImagesCheckJSON = await AsyncStorage.getItem("imageCategory");
         const existingImagesCheck = existingImagesCheckJSON ? JSON.parse(existingImagesCheckJSON) : [];
         
-        // Create a map of existing images by sharePointUrl for quick lookup
+        // Normalize SharePoint URL for consistent lookup (handles encoding differences after app restart)
+        const normalizeSharePointUrl = (url) => {
+          if (!url || typeof url !== 'string' || !url.startsWith('https://')) return url || '';
+          try {
+            const u = new URL(url);
+            u.pathname = decodeURIComponent(u.pathname);
+            return u.toString().replace(/\/$/, '').trim();
+          } catch {
+            return url.replace(/\/$/, '').trim();
+          }
+        };
+        // Create a map of existing images by normalized sharePointUrl for quick lookup
         const existingImagesMap = new Map();
+        const existingByProjectCategoryFile = new Map(); // fallback: project_category_categoryId_pictureName
         for (const img of existingImagesCheck) {
           const sharePointUrl = img.sharePointUrl || (img.picture?.startsWith('https://') ? img.picture : null);
           if (sharePointUrl) {
-            existingImagesMap.set(sharePointUrl, img);
+            existingImagesMap.set(normalizeSharePointUrl(sharePointUrl), img);
+          }
+          // Fallback key for images that have a local file (so we can match after restart even if URL differed)
+          if (img.picture?.startsWith('file://') && img.project && img.category != null && img.categoryId != null) {
+            const fileName = img.picture.split('/').pop() || '';
+            const baseName = fileName.replace(/^\d+_/, ''); // strip leading timestamp
+            const key = `${img.project}_${img.category}_${img.categoryId}_${baseName}`;
+            existingByProjectCategoryFile.set(key, img);
           }
         }
         
@@ -573,14 +586,18 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
                         for (const file of files) {
                           // Skip files without required properties
                           if (!file?.Name || !file?.ServerRelativeUrl) {
-                            console.warn('[HomeScreen] Skipping file with missing properties', file);
                             continue;
                           }
                           
                           const pictureName = file.Name;
                           const picture = file.ServerRelativeUrl;
                           const sharePointUrl = `https://solarvest.sharepoint.com${picture}`;
-                          const existingImage = existingImagesMap.get(sharePointUrl);
+                          const normalizedUrl = normalizeSharePointUrl(sharePointUrl);
+                          let existingImage = existingImagesMap.get(normalizedUrl);
+                          if (!existingImage && existingByProjectCategoryFile) {
+                            const fallbackKey = `${project}_${folderName}_${subfilesName}_${pictureName}`;
+                            existingImage = existingByProjectCategoryFile.get(fallbackKey) || null;
+                          }
                           
                           // Safely extract description from pictureName
                           const nameParts = pictureName.split("_");
@@ -611,9 +628,14 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
         );
         
         
-        // Helper: Check if local file exists for an image
+        // Helper: Check if local file exists for an image (use normalized URL + fallback by project/category/file)
         const checkLocalFileExists = async (imgInfo) => {
-          const existingImage = existingImagesMap.get(imgInfo.sharePointUrl);
+          const normalizedUrl = normalizeSharePointUrl(imgInfo.sharePointUrl);
+          let existingImage = existingImagesMap.get(normalizedUrl);
+          if (!existingImage && existingByProjectCategoryFile && imgInfo.project != null && imgInfo.category != null && imgInfo.categoryId != null && imgInfo.pictureName) {
+            const fallbackKey = `${imgInfo.project}_${imgInfo.category}_${imgInfo.categoryId}_${imgInfo.pictureName}`;
+            existingImage = existingByProjectCategoryFile.get(fallbackKey) || null;
+          }
           if (!existingImage?.picture?.startsWith('file://')) return false;
           
           const localPath = existingImage.picture.replace('file://', '');
@@ -633,17 +655,10 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
           }
         }
         
-        console.log('[HomeScreen] Download summary', {
-          total: imagesToDownload.length,
-          alreadyDownloaded: imagesToDownload.length - imagesNeedingDownload.length,
-          needDownload: imagesNeedingDownload.length
-        });
-        
         // Download image function
         const downloadImage = async (imageInfo, accessToken) => {
           if (downloadCancelRef.current || !isMountedRef.current) return null;
           if (!imageInfo?.serverRelativeUrl || !imageInfo?.pictureName) {
-            console.error('[HomeScreen] Invalid imageInfo in downloadImage', imageInfo);
             return null;
           }
           
@@ -688,10 +703,6 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
               picture: `file://${localPath}`,
             };
           } catch (error) {
-            console.error('[HomeScreen] Error downloading image', {
-              imageName: imageInfo.pictureName,
-              error: error.message
-            });
             return {
               ...imageInfo,
               picture: imageInfo.sharePointUrl,
@@ -748,7 +759,6 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
                     try {
                       await AsyncStorage.setItem("imageCategory", JSON.stringify(merged));
                     } catch (error) {
-                      console.error('[HomeScreen] Error in periodic AsyncStorage update', { error: error.message });
                     }
                     
                     const customNames = await getCustomCategoryNames();
@@ -776,7 +786,6 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
           await AsyncStorage.setItem("sharePointData", JSON.stringify(newData));
           if (isMountedRef.current) setData(newData);
         } catch (error) {
-          console.error('[HomeScreen] Error storing SharePoint data', { error: error.message });
         }
         
         // Also merge into imageCategory so images appear in Pictures list
@@ -881,10 +890,6 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
           await refreshProjectData(finalUpdatedImages);
         }
       } catch (error) {
-        console.error('[HomeScreen] Error in fetchData', {
-          error: error.message,
-          isMounted: isMountedRef.current
-        });
       }
     };
 
@@ -997,7 +1002,6 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
 
       setProjectData(formatData(storedData, project, displayCategories));
     } catch (error) {
-      console.log(error);
     }
   };
 
@@ -1041,6 +1045,18 @@ const HomeScreen = ({ setCategoryName, route, navigation }) => {
           </TouchableOpacity>
         ))}
       </View>
+      {downloadProgress.isDownloading && !showDownloadModal && (
+        <TouchableOpacity
+          onPress={() => setShowDownloadModal(true)}
+          style={styles.downloadBanner}
+          activeOpacity={0.8}
+        >
+          <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 8 }} />
+          <Text style={styles.downloadBannerText}>
+            Downloading {downloadProgress.completed}/{downloadProgress.total} — Tap To View
+          </Text>
+        </TouchableOpacity>
+      )}
       <PptModal projectData={projectData} project={project} />
       
       <DownloadProgressModal
@@ -1216,6 +1232,7 @@ const PptModal = ({ projectData, project }) => {
   const [selectedItems, setSelectedItems] = useState([]);
   const [loadingModal, setLoadingModal] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState("Please wait...");
+  const [stressTestReport, setStressTestReport] = useState(false);
 
   useEffect(() => {
     const initialSelectedHeaders = projectData.map(
@@ -1334,7 +1351,6 @@ const PptModal = ({ projectData, project }) => {
       }
       return false;
     } catch (error) {
-      console.error('[PPT] Upload error', { error: error.message });
       // Alert.alert("Error Uploading Data in Sharepoint", error?.message || String(error));
       Alert.alert(
         "File Size Exceeded",
@@ -1425,6 +1441,39 @@ const PptModal = ({ projectData, project }) => {
     }
   }
 
+  // Get free disk space in MB (for report generation check)
+  const getFreeDiskSpaceMB = async () => {
+    try {
+      const info = await RNFS.getFSInfo();
+      const freeBytes = Number(info.freeSpace) || 0;
+      return freeBytes / (1024 * 1024);
+    } catch {
+      return 0;
+    }
+  };
+
+  // Estimate disk space needed for report: images + temp templates + final PPT (MB)
+  const estimateReportSizeMB = async (validatedData) => {
+    const TEMPLATE_AND_OVERHEAD_MB = 80; // templates + pptxgen overhead + final file
+    let imagesBytes = 0;
+    for (const item of validatedData || []) {
+      const uri = item?.picture;
+      if (!uri?.startsWith('file://')) {
+        imagesBytes += 3 * 1024 * 1024; // assume ~3 MB per non-file image when converted
+        continue;
+      }
+      try {
+        const path = uri.replace('file://', '');
+        const stat = await RNFS.stat(path);
+        imagesBytes += Number(stat.size) || 0;
+      } catch {
+        imagesBytes += 3 * 1024 * 1024;
+      }
+    }
+    const imagesMB = imagesBytes / (1024 * 1024);
+    return Math.ceil(imagesMB + TEMPLATE_AND_OVERHEAD_MB);
+  };
+
   const generateTemplate = async () => {
     setLoadingModal(true);
     const font = "Century Gothic";
@@ -1458,12 +1507,10 @@ const PptModal = ({ projectData, project }) => {
         return isItemChecked && matchProject && isNotDeleted;
       });
       
-      console.log('[PPT] Filtered data', { count: filteredData.length });
 
       // Validate image paths exist before generation
       const validatedData = [];
       const invalidImages = [];
-      console.log('[PPT] Starting image validation');
       
       for (const item of filteredData) {
         if (!item?.picture) {
@@ -1548,6 +1595,95 @@ const PptModal = ({ projectData, project }) => {
         return;
       }
 
+      // Check device free space before generating (low space can cause write failures or OOM)
+      const MIN_FREE_MB = 100;
+      const freeMB = await getFreeDiskSpaceMB();
+      const estimatedMB = await estimateReportSizeMB(validatedData);
+      const requiredWithMargin = Math.ceil(estimatedMB * 1.3);
+      console.log('[Report] Disk check: free', freeMB.toFixed(1), 'MB, estimated report', estimatedMB, 'MB, required (1.3x)', requiredWithMargin, 'MB');
+      if (freeMB > 0 && (freeMB < MIN_FREE_MB || freeMB < requiredWithMargin)) {
+        const userProceed = await new Promise((resolve) => {
+          Alert.alert(
+            "Low Storage Space",
+            `The report may need about ${estimatedMB} MB. Your device has ${freeMB.toFixed(0)} MB free.\n\n` +
+            (freeMB < MIN_FREE_MB
+              ? "Freeing up space is recommended to avoid failures or crashes."
+              : "There may not be enough space to save the report and temporary files.") +
+            "\n\nYou can try anyway, or free up space and try again.",
+            [
+              { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+              { text: "Try anyway", onPress: () => resolve(true) },
+            ]
+          );
+        });
+        if (!userProceed) {
+          setLoadingModal(false);
+          return;
+        }
+      }
+
+      const docDir = RNFS.DocumentDirectoryPath;
+      const tempFilesToCleanup = [];
+      const cleanupTempFiles = async () => {
+        for (const p of tempFilesToCleanup) {
+          try { await RNFS.unlink(p); } catch (_) {}
+        }
+      };
+      reportLog(`Project: ${project}. Images: ${validatedData.length}. Categories: ${new Set(validatedData.map((i) => i.category)).size}.`);
+
+      // Normalize ph:// and content:// to file:// so PptxGenJS can read them (helps old project data)
+      for (const item of validatedData) {
+        const uri = item.picture;
+        if (!uri || uri.startsWith("file://")) continue;
+        if (!uri.startsWith("ph://") && !uri.startsWith("content://")) continue;
+        try {
+          const base64 = await RNFS.readFile(uri, "base64");
+          if (!base64) continue;
+          const safeId = (item.id || "img").replace(/[^a-zA-Z0-9_-]/g, "_");
+          const tempPath = `${docDir}/_ppt_img_${safeId}.jpg`;
+          await RNFS.writeFile(tempPath, base64, "base64");
+          tempFilesToCleanup.push(tempPath);
+          item.picture = `file://${tempPath}`;
+        } catch (e) {
+        }
+      }
+      // Write template images to temp files so pptxgen uses path instead of data (reduces JS heap)
+      const writeBase64ToFile = async (dataUrlOrBase64, filename) => {
+        const base64 = (dataUrlOrBase64 && dataUrlOrBase64.includes(',')) ? dataUrlOrBase64.split(',')[1] : dataUrlOrBase64;
+        if (!base64) return null;
+        const path = `${docDir}/${filename}`;
+        await RNFS.writeFile(path, base64, 'base64');
+        tempFilesToCleanup.push(path);
+        return `file://${path}`;
+      };
+      const [bg1, bg2, bg3, logo1, logo2, icon1] = await Promise.all([
+        writeBase64ToFile(backgroundImg, '_ppt_bg1.png'),
+        writeBase64ToFile(titleBackgroundImg, '_ppt_bg2.png'),
+        writeBase64ToFile(mainBackground, '_ppt_bg3.png'),
+        writeBase64ToFile(titleLogo, '_ppt_logo1.png'),
+        writeBase64ToFile(siteInfoLogo, '_ppt_logo2.png'),
+        writeBase64ToFile(dropPointIcon, '_ppt_icon1.png'),
+      ]);
+      const templatePaths = { bg1: bg1 || backgroundImg, bg2: bg2 || titleBackgroundImg, bg3: bg3 || mainBackground, logo1: logo1 || titleLogo, logo2: logo2 || siteInfoLogo, icon1: icon1 || dropPointIcon };
+      // Log template file sizes for review
+      let templateTotalBytes = 0;
+      const templateNames = ['bg1', 'bg2', 'bg3', 'logo1', 'logo2', 'icon1'];
+      for (const key of templateNames) {
+        const p = templatePaths[key];
+        if (p && typeof p === 'string' && p.startsWith('file://')) {
+          try {
+            const stat = await RNFS.stat(p.replace('file://', ''));
+            const kb = (stat.size / 1024).toFixed(1);
+            templateTotalBytes += stat.size;
+            console.log('[Report] Template', key, kb, 'KB');
+          } catch (_) {}
+        }
+      }
+      if (templateTotalBytes > 0) {
+        console.log('[Report] Template images total:', (templateTotalBytes / (1024 * 1024)).toFixed(2), 'MB');
+      }
+      const useData = (pathOrData) => (pathOrData && pathOrData.startsWith('file://')) ? { path: pathOrData } : { data: pathOrData };
+
       let ppt = new pptxgen();
 
       // Sort data by category order (from categoryOrderMap) and then by categoryId within each category
@@ -1598,7 +1734,7 @@ const PptModal = ({ projectData, project }) => {
       ttlCat = Object.keys(groupedData).length;
 
       const firstPage = ppt.addSlide();
-      firstPage.background = { data: backgroundImg };
+      firstPage.background = useData(templatePaths.bg1);
       firstPage.addText("Client:", {
         x: 2.5,
         y: 1.6,
@@ -1647,7 +1783,7 @@ const PptModal = ({ projectData, project }) => {
         fontFace: font,
       });
       const siteInformation = ppt.addSlide();
-      siteInformation.background = { data: titleBackgroundImg };
+      siteInformation.background = useData(templatePaths.bg2);
       siteInformation.addText("SITE INFORMATION", {
         x: 0.5,
         y: 2,
@@ -1659,7 +1795,7 @@ const PptModal = ({ projectData, project }) => {
         fontFace: font,
       });
       siteInformation.addImage({
-        data: siteInfoLogo,
+        ...useData(templatePaths.logo2),
         x: "90%",
         y: "90%",
         w: "30%",
@@ -1675,7 +1811,7 @@ const PptModal = ({ projectData, project }) => {
 
       for (const [category, items] of sortedGroupedEntries) {
         const categorySlide = ppt.addSlide();
-        categorySlide.background = { data: titleBackgroundImg };
+        categorySlide.background = useData(templatePaths.bg2);
         categorySlide.addText(`PROPOSED ${category.toUpperCase()}`, {
           x: 0.5,
           y: 2,
@@ -1686,7 +1822,7 @@ const PptModal = ({ projectData, project }) => {
           color: "#FFFFFF",
         });
         categorySlide.addImage({
-          data: titleLogo,
+          ...useData(templatePaths.logo1),
           x: "90%",
           y: "90%",
           w: "30%",
@@ -1814,7 +1950,6 @@ const PptModal = ({ projectData, project }) => {
           for (const item of items) {
             // Validate required properties
             if (!item?.categoryId || !item?.picture) {
-              console.warn('[PPT] Skipping item with missing required properties', item);
               continue;
             }
             
@@ -1842,7 +1977,6 @@ const PptModal = ({ projectData, project }) => {
           // Add photo items
           let yVal = 1;
           if (!Array.isArray(photoItems)) {
-            console.warn('[PPT] photoItems is not an array, skipping');
           } else {
             photoItems.forEach((item) => {
             if (item.color) {
@@ -1856,7 +1990,7 @@ const PptModal = ({ projectData, project }) => {
               });
             } else if (item.icon) {
               itemSlide.addImage({
-                data: dropPointIcon,
+                ...useData(templatePaths.icon1),
                 x: 0.2,
                 y: yVal,
                 w: "2%",
@@ -1968,16 +2102,26 @@ const PptModal = ({ projectData, project }) => {
               }
 
             const imageDimensions = await new Promise((resolve, reject) => {
+              let settled = false;
+              const done = (fn) => (...args) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                fn(...args);
+              };
+              const timer = setTimeout(() => {
+                done(() => reject(new Error('Image.getSize timeout')))();
+              }, 15000);
               Image.getSize(
                 picture,
-                  (width, height) => {
-                    if (!width || !height || width <= 0 || height <= 0) {
-                      reject(new Error(`Invalid image dimensions: ${width}x${height}`));
-                      return;
-                    }
-                    resolve({ width, height });
-                  },
-                (error) => reject(error)
+                (width, height) => {
+                  if (!width || !height || width <= 0 || height <= 0) {
+                    done(() => reject(new Error(`Invalid image dimensions: ${width}x${height}`)))();
+                    return;
+                  }
+                  done(() => resolve({ width, height }))();
+                },
+                (error) => done(() => reject(error))()
               );
             });
 
@@ -2020,8 +2164,21 @@ const PptModal = ({ projectData, project }) => {
               h: imageHeight,
               sizing: { type: "contain" },
             });
+
+            // Dev-only: duplicate this image on an extra slide to 2x memory use (for OOM testing with few images)
+            if (__DEV__ && global.__REPORT_STRESS_TEST__) {
+              const dupSlide = ppt.addSlide();
+              dupSlide.background = useData(templatePaths.bg2);
+              dupSlide.addImage({
+                path: picture,
+                x: (10 - imageWidth) / 2 + 1,
+                y: (5.63 - imageHeight) / 2,
+                w: imageWidth,
+                h: imageHeight,
+                sizing: { type: "contain" },
+              });
+            }
             } catch (error) {
-              console.error('[PPT] Error processing image', { categoryId, error: error.message });
               continue;
             }
           }
@@ -2030,7 +2187,7 @@ const PptModal = ({ projectData, project }) => {
       
 
       const additionalNoteSlide = ppt.addSlide();
-      additionalNoteSlide.background = { data: mainBackground };
+      additionalNoteSlide.background = useData(templatePaths.bg3);
       additionalNoteSlide.addText("Additional Notes", {
         x: 0.2,
         y: 0.2,
@@ -2064,7 +2221,7 @@ const PptModal = ({ projectData, project }) => {
       additionalNoteSlide.addText(textObj, { x: 0.5, y: 1.5 });
 
       const footerSlide = ppt.addSlide();
-      footerSlide.background = { data: mainBackground };
+      footerSlide.background = useData(templatePaths.bg3);
 
       let startTime = Date.now();
       let arrayBuffer;
@@ -2075,12 +2232,10 @@ const PptModal = ({ projectData, project }) => {
         }
         const endTime = Date.now();
         const sizeMB = (arrayBuffer.byteLength / (1024 * 1024)).toFixed(2);
-        console.log('[PPT] Arraybuffer generated', { sizeMB, timeMs: endTime - startTime });
-        
+        console.log('[Report] In-memory buffer:', sizeMB, 'MB, generated in', endTime - startTime, 'ms');
         // Clear ppt object from memory after writing to help GC
         ppt = null;
       } catch (error) {
-        console.error('[PPT] Error generating arraybuffer', { error: error.message });
         // Clear ppt even on error to help GC
         ppt = null;
         throw error;
@@ -2095,7 +2250,7 @@ const PptModal = ({ projectData, project }) => {
       try {
         // Save file to app's document directory
         await writeLargePPTInChunks(filePath, arrayBuffer);
-        
+        arrayBuffer = null; // Release large buffer to help GC
         // Verify file exists after writing
         const fileExists = await RNFS.exists(filePath);
         if (!fileExists) {
@@ -2103,7 +2258,8 @@ const PptModal = ({ projectData, project }) => {
         }
         
         const fileStats = await RNFS.stat(filePath);
-        
+        const fileSizeMB = (fileStats.size / (1024 * 1024)).toFixed(2);
+        console.log('[Report] File written:', filePath, 'size', fileSizeMB, 'MB, write time', (Date.now() - startTime), 'ms');
         // On Android, automatically attempt to save to Downloads folder
         // This uses MediaStore API and makes the file visible in file manager
         if (Platform.OS === "android") {
@@ -2122,16 +2278,17 @@ const PptModal = ({ projectData, project }) => {
       
       endTime = Date.now();
 
+      await cleanupTempFiles();
       setLoadingModal(false);
       
-      // Show success message with options
+      // Show success message with options (report is already on device at filePath; user can save to Downloads or upload)
       setTimeout(()=>{
         Alert.alert(
-          "PowerPoint Report Generated Successful!",
-          `File saved: ${reportName}\n\nWhat would you like to do?`,
+          "PowerPoint Report Generated Successfully!",
+          `File saved: ${reportName}\n\nYou can save a copy to your device (Downloads) or upload to SharePoint.`,
           [
             {
-              text: "Save to Downloads",
+              text: "Save to device (Downloads)",
               onPress: async () => {
                 if (Platform.OS === "android") {
                   const saved = await saveToDownloads(filePath, reportName);
@@ -2139,7 +2296,7 @@ const PptModal = ({ projectData, project }) => {
                     Alert.alert("Success", "File saved to Downloads folder!");
                   }
                 } else {
-                  Alert.alert("Info", "On iOS, file is saved in app directory.");
+                  Alert.alert("Info", "On iOS, the file is in the app's storage. Use Share or Files to save a copy elsewhere.");
                 }
               },
             },
@@ -2152,7 +2309,6 @@ const PptModal = ({ projectData, project }) => {
                 const uploadBuffer = Buffer.from(fileData, 'base64').buffer;
                 await uploadReport(uploadBuffer, reportName, filePath);
                 const uploadEndTime = Date.now();
-                console.log("uploadReport took", (uploadEndTime - uploadStartTime) / 1000, "seconds");
               },
             },
             {
@@ -2173,8 +2329,16 @@ const PptModal = ({ projectData, project }) => {
       } else if (errorMessage.includes("Failed to getSize")) {
         userMessage = "Some image files are missing or inaccessible. The PowerPoint was generated but may be missing some images.\n\n" +
                       "Please ensure all images are still available and try again.";
+      } else if (
+        /Cannot allocate a data block for the ArrayBuffer|out of memory|OOM|allocation failed/i.test(errorMessage)
+      ) {
+        userMessage =
+          "The device ran out of memory while building the report (too many or too large images).\n\n" +
+          "• Try selecting fewer categories or fewer images, then generate again.\n" +
+          "• Free up device storage and close other apps, then try again.";
       }
       
+      await cleanupTempFiles();
       Alert.alert("Error saving the PowerPoint file", userMessage + "\n\nTechnical details: " + errorMessage);
       setLoadingModal(false);
     }
@@ -2209,8 +2373,22 @@ const PptModal = ({ projectData, project }) => {
                 />
               ))}
             </ScrollView>
+            {__DEV__ && (
+              <Pressable
+                onPress={() => {
+                  const next = !stressTestReport;
+                  setStressTestReport(next);
+                  global.__REPORT_STRESS_TEST__ = next;
+                }}
+                style={{ marginVertical: 8, padding: 8, backgroundColor: stressTestReport ? '#ffcccc' : '#eee', borderRadius: 4 }}
+              >
+                <Text style={{ fontSize: 12, color: '#333' }}>
+                  {stressTestReport ? '✓ Stress test ON (2x image memory)' : 'Stress test: OFF (tap to 2x images for OOM test)'}
+                </Text>
+              </Pressable>
+            )}
             <Button title={"GENERATE"} onPress={()=>{
-              setLoadingMessage("Report generating inprogress, it will take several minutes. Please wait...")
+              setLoadingMessage("Report is being generated and will take few minutes, please wait.")
               generatePowerpoint();
             }} />
             <Pressable
@@ -2558,12 +2736,17 @@ function App() {
   const [formDigest, setFormDigest] = useState(null);
   const [login, setLogin] = useState(null);
 
+  // Log JS engine on startup (JSC = Hermes disabled / OOM fix active; Hermes = Hermes enabled)
+  useEffect(() => {
+    const engine = typeof global.HermesInternal !== 'undefined' ? 'Hermes' : 'JSC';
+    console.log('[App] JS engine:', engine);
+  }, []);
+
   useEffect(() => {
     const loadSettings = async () => {
       try {
         await retrieveAccessToken();
       } catch (error) {
-        console.error("Error loading settings:", error);
       }
     };
     const checkLoginStatus = async () => {
@@ -2641,7 +2824,6 @@ function App() {
       async (taskId) => {
         // <-- Event callback
         // This is the fetch-event callback.
-        console.log("[BackgroundFetch] taskId: ", taskId);
         const loadImageBase64 = async (capturedImageURI) => {
           try {
             const base64Data = await RNFS.readFile(capturedImageURI, "base64");
@@ -2679,10 +2861,6 @@ function App() {
               return true;
             }
           } catch (error) {
-            console.log(
-              "Error Uploading Data in Sharepoint",
-              error.response.data
-            );
             return false;
           }
         };
@@ -2704,7 +2882,6 @@ function App() {
               },
             });
 
-            console.log("File Exist: " + response.data.d.Exists);
             return response.data.d.Exists;
           } catch (error) {
             // *********Create sharepoint folder path***********
@@ -2769,7 +2946,6 @@ function App() {
               JSON.stringify(storedData)
             );
           } catch (error) {
-            console.log("There is an error inside ", error);
           }
         };
 
@@ -2814,7 +2990,6 @@ function App() {
           const filteredData = storedData.filter((item) => item.opt !== null);
           
           const photosToUpload = filteredData.filter(item => item.opt === "create").length;
-          console.log(`📤 Background upload: ${photosToUpload} photo(s) to upload`);
           
           let uploadedCount = 0;
           await Promise.all(
@@ -2840,7 +3015,6 @@ function App() {
                     );
                     if (imgUploaded) {
                       uploadedCount++;
-                      console.log(`✅ Background upload: ${uploadedCount}/${photosToUpload} photos uploaded`);
                       
                       const storedDataJSON = await AsyncStorage.getItem(
                         "imageCategory"
@@ -2893,10 +3067,6 @@ function App() {
                               JSON.stringify(storedData)
                             );
                           } catch (error) {
-                            console.log(
-                              "Error updating the 'opt' key: ",
-                              error
-                            );
                           }
                         } else {
                         }
@@ -2951,7 +3121,6 @@ function App() {
       async (taskId) => {
         // <-- Task timeout callback
         // This task has exceeded its allowed running-time.
-        console.warn("[BackgroundFetch] TIMEOUT task: ", taskId);
         BackgroundFetch.finish(taskId);
       }
     );
@@ -3187,6 +3356,21 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     textAlign: "center",
     color: "black",
+  },
+  downloadBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#8829A0",
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    marginHorizontal: 0,
+  },
+  downloadBannerText: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "600",
   },
   sectionContainer: {
     marginTop: 32,

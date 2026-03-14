@@ -85,10 +85,8 @@ export const retrieveAccessToken = async () => {
             // Set the stringified object in AsyncStorage
             AsyncStorage.setItem("sharepointToken", jsonString)
               .then(() => {
-                console.log("sharepoint token Generated");
               })
               .catch((error) => {
-                console.log("Error generating sharepoint token:", error);
               });
             return [
               response.data.access_token,
@@ -120,7 +118,6 @@ export const checkFolderExist = async (folderUri,project) => {
     });
 
     if (response?.data?.d?.Exists !== undefined) {
-      console.log("File Exist: " + response.data.d.Exists);
       return response.data.d.Exists;
     }
     return false;
@@ -131,19 +128,10 @@ export const checkFolderExist = async (folderUri,project) => {
       "-2147024894, System.IO.FileNotFoundException"
     ) {
       try {
-        console.log("ListofImage/////////////////////");
-
-        console.log("ListofImage/////////////////////", project);
-
         let parentFolder = project;
         const [accessToken, formDigest] = await retrieveAccessToken();
 
         for (let path of folderUri.split("/").splice(1)) {
-          console.log(
-            "ListofImage/////////////////////",
-            `ListofImage/${parentFolder}/${path}`
-          );
-          console.log("ListofImage/////////////////////", parentFolder);
 
           try {
             const response = await axios({
@@ -164,7 +152,6 @@ export const checkFolderExist = async (folderUri,project) => {
             });
             parentFolder += "/" + path;
             if (response?.data?.d?.Exists !== undefined) {
-              console.log("Folder created: " + response.data.d.Exists);
               folderExist = response.data.d.Exists;
             }
           } catch (error) {
@@ -173,7 +160,6 @@ export const checkFolderExist = async (folderUri,project) => {
           }
         }
       } catch (error) {
-        console.log("FileNotFoundException/////////////////////", error);
       }
     }
   }

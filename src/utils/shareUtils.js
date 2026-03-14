@@ -32,10 +32,8 @@ export const saveToDownloads = async (filePath, fileName) => {
     // Try using native module first (uses MediaStore API for Android 10+)
     try {
       const result = await saveToDownloadsNative(filePath, fileName);
-      console.log("File saved to Downloads using native module:", result);
       return true;
     } catch (nativeError) {
-      console.log("Native module failed, falling back to Share API:", nativeError.message);
       // Fallback to react-native-share if native module fails
       await Share.open({
         url: `file://${filePath}`,
@@ -49,7 +47,6 @@ export const saveToDownloads = async (filePath, fileName) => {
   } catch (error) {
     // User cancelled or error occurred
     if (error.message && error.message.includes("User did not share")) {
-      console.log("User cancelled save to Downloads");
       return false;
     }
     console.error("Error saving to Downloads:", error);

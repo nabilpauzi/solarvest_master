@@ -1,3 +1,6 @@
+# Force JSC (Hermes disabled) so post_install and all pods see it. Prevents OOM crash.
+ENV['USE_HERMES'] = '0'
+
 # Resolve react_native_pods.rb with node to allow for hoisting
 # require Pod::Executable.execute_command('node', ['-p',
 #   'require.resolve(
@@ -43,8 +46,8 @@ target 'SolarVest_Project' do
 
   use_react_native!(
     :path => config[:reactNativePath],
-    # Hermes is now enabled by default. Disable by setting this flag to false.
-    :hermes_enabled => flags[:hermes_enabled],
+    # Hermes disabled to avoid OOM crash (EXC_BAD_ACCESS / GCBase::oom). Use JSC until app-side memory fixes are verified. Re-enable with flags[:hermes_enabled] when stable.
+    :hermes_enabled => false,
     :fabric_enabled => flags[:fabric_enabled],
     # An absolute path to your application root.
     :app_path => "#{Pod::Config.instance.installation_root}/.."
@@ -67,11 +70,15 @@ target 'SolarVest_Project' do
     
     # Fix for deployment target warnings - ensure all pods use minimum iOS 13.0
     # iOS 13.0+ is required for Swift compatibility libraries (swiftCompatibility56, etc.)
-    # Also ensure Swift pods have proper settings for compatibility libraries
+    # VisionCamera uses UIWindowScene (iOS 13+) so must not build for 12.4
     installer.pods_project.targets.each do |target|
       target.build_configurations.each do |build_config|
         deployment_target = build_config.build_settings['IPHONEOS_DEPLOYMENT_TARGET']
         if deployment_target && deployment_target.to_f < 13.0
+          build_config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'
+        end
+        # Force VisionCamera to iOS 13.0+ (it uses UIWindowScene)
+        if target.name == 'VisionCamera'
           build_config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'
         end
         

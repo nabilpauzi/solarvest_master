@@ -1,0 +1,11 @@
+diff --git a/node_modules/react-native-vision-camera/ios/Core/Extensions/UIApplication+interfaceOrientation.swift b/node_modules/react-native-vision-camera/ios/Core/Extensions/UIApplication+interfaceOrientation.swift
+index 0000000..1111111 100644
+--- a/node_modules/react-native-vision-camera/ios/Core/Extensions/UIApplication+interfaceOrientation.swift
++++ b/node_modules/react-native-vision-camera/ios/Core/Extensions/UIApplication+interfaceOrientation.swift
+@@ -8,6 +8,7 @@
+ 
+ import UIKit
+ 
++@available(iOS 13.0, *)
+ extension UIApplication {
+   private var windowScene: UIWindowScene? {
