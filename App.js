@@ -1820,11 +1820,11 @@ const PptModal = ({ projectData, project }) => {
       const compressionOptions = isLargeReport
         ? { maxDimension: 1400, jpegQuality: 68, concurrency: 2, skipCompressMaxBytes: 900 * 1024 }
         : { maxDimension: 1600, jpegQuality: 72, concurrency: 3, skipCompressMaxBytes: 700 * 1024 };
-      setLoadingMessage(`Step 1/3: Preparing ${totalToCompress} photos (usually 2–8 min; please wait)...`);
+      setLoadingMessage(`Step 1/3: Preparing ${totalToCompress} photos (usually 2–8 min; please wait)`);
       const { compressedMap, tempFiles: compressedTempFiles, totalOriginalBytes, totalCompressedBytes } = await compressImagesForPPT(
         validatedData,
         async (done, total) => {
-          setLoadingMessage(`Step 1/3: Compressing photos ${done}/${total} (do not close the app)...`);
+          setLoadingMessage(`Step 1/3: Compressing photos ${done}/${total} (do not close the app)`);
           await new Promise((r) => setTimeout(r, 0));
         },
         compressionOptions
@@ -1844,7 +1844,7 @@ const PptModal = ({ projectData, project }) => {
         return;
       }
 
-      setLoadingMessage(`Step 2/3: Building slides (${totalToCompress} images)...`);
+      setLoadingMessage(`Step 2/3: Building slides (${totalToCompress} images)`);
       await new Promise((r) => setTimeout(r, 0));
 
       let ppt = new pptxgen();
@@ -2416,7 +2416,7 @@ const PptModal = ({ projectData, project }) => {
 
       console.log('[Report] step1 reportName=', reportName, 'filePath=', filePath, 'project=', project, 'bufferLen=', arrayBuffer?.byteLength);
 
-      setLoadingMessage("Saving report to device (may take a few minutes for large files)...");
+      setLoadingMessage("Report is being generated and will take few minutes, please wait.");
       await new Promise((r) => setTimeout(r, 0));
 
       try {
