@@ -50,6 +50,7 @@ import FontAwesome5 from "react-native-vector-icons/FontAwesome5";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import pptxgen from "pptxgenjs";
 import RNFS from "react-native-fs";
+import RNFetchBlob from "rn-fetch-blob";
 import { ListItem } from "@rneui/themed";
 import CheckBox from "@react-native-community/checkbox";
 import axios from "axios";
@@ -58,6 +59,7 @@ import { btoa, atob, toByteArray} from "react-native-quick-base64";
 import { Settings } from "./src/components/Settings.js";
 import { retrieveAccessToken } from "./src/utils/sharePointUtils.js";
 import DownloadProgressModal from "./src/components/DownloadProgressModal.js";
+import { compressImagesForPPT, cleanupTempImages } from "./src/utils/imageCompressor.js";
 
 import { Buffer } from 'buffer';
 global.Buffer = Buffer;
@@ -1232,7 +1234,6 @@ const PptModal = ({ projectData, project }) => {
   const [selectedItems, setSelectedItems] = useState([]);
   const [loadingModal, setLoadingModal] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState("Please wait...");
-  const [stressTestReport, setStressTestReport] = useState(false);
 
   useEffect(() => {
     const initialSelectedHeaders = projectData.map(
@@ -1284,84 +1285,212 @@ const PptModal = ({ projectData, project }) => {
     }
   };
 
-  const uploadReport = async (fileDataABuffer, reportName, filePath) => {
+  const ensureProjectFolderExists = async (projectName) => {
+    const [accessToken, formDigest] = await retrieveAccessToken();
+    if (!accessToken || !formDigest) return false;
+    const checkUrl = `https://solarvest.sharepoint.com/sites/ProjectDevelopment/_api/web/GetFolderByServerRelativeUrl('ListofImage/${projectName}')`;
     try {
-      const fileLength = fileDataABuffer.byteLength;
-      const fileInMB = (fileLength / (1000000)).toFixed(2);
-      
-      if (fileInMB > 200) {
-        setTimeout(() => {
-          Alert.alert(
-            "File Size Exceeded",
-            "The file size is more than 200MB. Please upload the file manually to Sharepoint.",
-            [
-              {
-                text: "Cancel",
-                style: "cancel",
+      const r = await axios.get(checkUrl, {
+        headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json;odata=verbose" },
+      });
+      if (r?.data?.d?.Exists) return true;
+      return false;
+    } catch (e) {
+      const is404 = e?.response?.status === 404 || (e?.response?.data?.error?.code && String(e.response.data.error.code).includes("FileNotFoundException"));
+      if (is404) {
+        try {
+          await axios.post(
+            "https://solarvest.sharepoint.com/sites/ProjectDevelopment/_api/web/folders",
+            { __metadata: { type: "SP.Folder" }, ServerRelativeUrl: `ListofImage/${projectName}` },
+            {
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                "X-RequestDigest": formDigest,
+                Accept: "application/json;odata=verbose",
+                "Content-Type": "application/json;odata=verbose",
               },
-              {
-                text: "Go to sharepoint",
-                onPress: () => {
-                  Linking.openURL(
-                    `https://solarvest.sharepoint.com/sites/ProjectDevelopment/ListofImage/`
-                  );
-                },
-              },
-            ]
+            }
           );
-        }, 100)
-        return false;
+          return true;
+        } catch (createErr) {
+          console.warn('[Upload] could not create project folder', createErr?.response?.data?.error?.message || createErr?.message);
+          return false;
+        }
+      }
+      throw e;
+    }
+  };
+
+  const uploadReport = async (reportName, filePath) => {
+    try {
+      setLoadingMessage("Report upload inprogress, it will take several minutes. Please wait...");
+      setLoadingModal(true);
+
+      let folderReady = false;
+      try {
+        folderReady = await ensureProjectFolderExists(project);
+        console.log('[Upload] project folder exists or created:', folderReady);
+      } catch (folderErr) {
+        console.warn('[Upload] ensureProjectFolderExists failed', folderErr?.message);
       }
 
-
-      setLoadingMessage("Report upload inprogress, it will take several minutes. Please wait...")
-      setLoadingModal(true);
       const fileUploadUrl = `https://solarvest.sharepoint.com/sites/ProjectDevelopment/_api/web/GetFolderByServerRelativeUrl(\'/sites/ProjectDevelopment/ListofImage/${project}\')/Files/add(url=\'${reportName}\',overwrite=true)`;
 
       const [accessToken, formDigest] = await retrieveAccessToken();
+      if (!accessToken || !formDigest) {
+        throw new Error("Could not get SharePoint credentials");
+      }
 
       const headers = {
         Authorization: `Bearer ${accessToken}`,
         "X-RequestDigest": formDigest,
         Accept: "application/json; odata=verbose",
-        "Content-Type": "application/octet-stream", // Required for binary
-      }; 
+        "Content-Type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      };
 
-      const response = await axios({
-        method: "POST",
-        url: fileUploadUrl,
-        data: fileDataABuffer,
-        headers: headers,
-        maxBodyLength: Infinity,          // ← Important
-        maxContentLength: Infinity,       // ← Important
-        timeout: 10 * 60 * 1000,          // ← Optional: 10 min timeout
-        onUploadProgress: (progressEvent) => {
-          if (progressEvent.total && progressEvent.total > 0) {
-            const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+      const pathToFile = filePath.replace(/^file:\/\//, "");
+      console.log('[Upload] POST to SharePoint via RNFetchBlob (stream from file), path=', pathToFile, 'folder=', project);
+
+      const response = await RNFetchBlob.fetch(
+        "POST",
+        fileUploadUrl,
+        headers,
+        RNFetchBlob.wrap(pathToFile)
+      );
+
+      let status = 0;
+      let data = null;
+      try {
+        status = response.respInfo?.status ?? response.info?.()?.status ?? 0;
+      } catch (_) {
+        console.log('[Upload] could not read response status');
+        status = 200;
+      }
+      try {
+        const str = response.data;
+        if (typeof str === 'string' && str) {
+          try {
+            data = JSON.parse(str);
+          } catch (_) {
+            console.log('[Upload] response body not JSON');
           }
-        },
-        validateStatus: function (status) {
-          return true; // prevent throwing error for non-200
-        },
-      });
+        }
+      } catch (_) {
+        console.log('[Upload] could not read response body');
+        if (status === 0) status = 200;
+      }
 
-      if (response?.data?.d?.Exists) {
+      const hasODataError = data?.error?.message != null;
+      const fileD = data?.d;
+      const hasFileData = fileD && (fileD.Name || fileD.ServerRelativeUrl || fileD.Exists !== undefined || fileD.Id != null);
+
+      console.log('[Upload] response status=', status, 'hasError=', hasODataError, 'hasFileData=', hasFileData, 'd keys=', fileD ? Object.keys(fileD) : null);
+
+      if (hasODataError) {
+        const errMsg = data?.error?.message?.value || data?.error?.message || 'SharePoint returned an error';
+        console.log('[Upload] SharePoint error:', errMsg);
+        Alert.alert(
+          "Upload failed",
+          errMsg + "\n\nYou can try again or upload the file manually to Sharepoint.",
+          [
+            { text: "OK", style: "cancel" },
+            {
+              text: "Open Sharepoint",
+              onPress: () => {
+                Linking.openURL(
+                  `https://solarvest.sharepoint.com/sites/ProjectDevelopment/ListofImage/`
+                );
+              },
+            },
+          ]
+        );
+        return false;
+      }
+
+      if (status >= 200 && status < 300 && hasFileData) {
+        console.log('[Upload] Success');
         Alert.alert("PowerPoint Report Uploaded Successfully!", reportName);
         return true;
       }
+
+      if (status >= 200 && status < 300 && !hasFileData) {
+        console.log('[Upload] HTTP 2xx but no file data – check SharePoint');
+        Alert.alert(
+          "Upload may have succeeded",
+          "The server returned " + status + ". We couldn't read the response details. Please check SharePoint to see if \"" + reportName + "\" appears.",
+          [
+            { text: "OK", style: "cancel" },
+            {
+              text: "Open Sharepoint",
+              onPress: () => {
+                Linking.openURL(
+                  `https://solarvest.sharepoint.com/sites/ProjectDevelopment/ListofImage/`
+                );
+              },
+            },
+          ]
+        );
+        return false;
+      }
+
+      const errMsg = data?.error?.message?.value || data?.error?.message || data?.message || `HTTP ${status}`;
+      console.log('[Upload] Failed:', errMsg);
+      Alert.alert(
+        "Upload failed",
+        errMsg + "\n\nYou can try again or upload the file manually to Sharepoint.",
+        [
+          { text: "OK", style: "cancel" },
+          {
+            text: "Open Sharepoint",
+            onPress: () => {
+              Linking.openURL(
+                `https://solarvest.sharepoint.com/sites/ProjectDevelopment/ListofImage/`
+              );
+            },
+          },
+        ]
+      );
       return false;
     } catch (error) {
-      // Alert.alert("Error Uploading Data in Sharepoint", error?.message || String(error));
+      console.log('[Upload] catch', error?.message, 'response=', error?.response?.status, error?.response?.data?.error?.message);
+      const isParseResponse = /cannot parse response|failed to parse/i.test(error?.message || '');
+      if (isParseResponse) {
+        console.log('[Upload] Library could not parse response – upload may still have succeeded. Check SharePoint.');
+        Alert.alert(
+          "Check SharePoint",
+          "The upload finished but the app could not read the server response (this often happens on Simulator or for some project folders).\n\nPlease open SharePoint and check if \"" + reportName + "\" is in ListofImage / " + project + ". If you see it, you're all set. If not, try again or upload manually.",
+          [
+            { text: "OK", style: "cancel" },
+            {
+              text: "Open Sharepoint",
+              onPress: () => {
+                Linking.openURL(
+                  `https://solarvest.sharepoint.com/sites/ProjectDevelopment/ListofImage/`
+                );
+              },
+            },
+          ]
+        );
+        return false;
+      }
+      const isNetworkError = /network error|failed to fetch|request failed/i.test(error?.message || '');
+      let message = error?.response?.data?.error?.message?.value
+        || error?.response?.data?.error?.message
+        || error?.message
+        || String(error);
+      if (isNetworkError) {
+        message = "Network Error: Could not reach SharePoint.\n\n" +
+          "• Try again on a stable Wi‑Fi or cellular connection.\n" +
+          "• If you're on the iOS Simulator, upload often fails; try on a real device.\n" +
+          "• For large files (~35 MB), upload manually via the link below.";
+      }
       Alert.alert(
-        "File Size Exceeded",
-        "The file size is more than allowed limit by Sharepoint. Please upload the file manually to Sharepoint.",
+        "Upload failed",
+        message + "\n\nYou can try again or upload the file manually to Sharepoint.",
         [
+          { text: "OK", style: "cancel" },
           {
-            text: "Cancel",
-            style: "cancel",
-          },
-          {
-            text: "Go to sharepoint",
+            text: "Open Sharepoint",
             onPress: () => {
               Linking.openURL(
                 `https://solarvest.sharepoint.com/sites/ProjectDevelopment/ListofImage/`
@@ -1595,12 +1724,20 @@ const PptModal = ({ projectData, project }) => {
         return;
       }
 
-      // Check device free space before generating (low space can cause write failures or OOM)
+      // Stable per-image key for compressed-map lookup.
+      // Avoids wrong-image mapping when fallback index differs across category loops.
+      for (let i = 0; i < validatedData.length; i++) {
+        const it = validatedData[i];
+        it.__compressKey = `idx:${i}|id:${it?.id ?? ""}|cat:${it?.category ?? ""}|cid:${it?.categoryId ?? ""}`;
+      }
+
+      // Allow large reports; safety is enforced later by adaptive compression + size check.
+
       const MIN_FREE_MB = 100;
       const freeMB = await getFreeDiskSpaceMB();
       const estimatedMB = await estimateReportSizeMB(validatedData);
       const requiredWithMargin = Math.ceil(estimatedMB * 1.3);
-      console.log('[Report] Disk check: free', freeMB.toFixed(1), 'MB, estimated report', estimatedMB, 'MB, required (1.3x)', requiredWithMargin, 'MB');
+      console.log('[Report] Disk: free', freeMB.toFixed(0), 'MB, need ~', requiredWithMargin, 'MB');
       if (freeMB > 0 && (freeMB < MIN_FREE_MB || freeMB < requiredWithMargin)) {
         const userProceed = await new Promise((resolve) => {
           Alert.alert(
@@ -1622,6 +1759,7 @@ const PptModal = ({ projectData, project }) => {
         }
       }
 
+      await new Promise((r) => setTimeout(r, 0));
       const docDir = RNFS.DocumentDirectoryPath;
       const tempFilesToCleanup = [];
       const cleanupTempFiles = async () => {
@@ -1629,24 +1767,33 @@ const PptModal = ({ projectData, project }) => {
           try { await RNFS.unlink(p); } catch (_) {}
         }
       };
-      reportLog(`Project: ${project}. Images: ${validatedData.length}. Categories: ${new Set(validatedData.map((i) => i.category)).size}.`);
 
-      // Normalize ph:// and content:// to file:// so PptxGenJS can read them (helps old project data)
-      for (const item of validatedData) {
-        const uri = item.picture;
-        if (!uri || uri.startsWith("file://")) continue;
-        if (!uri.startsWith("ph://") && !uri.startsWith("content://")) continue;
-        try {
-          const base64 = await RNFS.readFile(uri, "base64");
-          if (!base64) continue;
-          const safeId = (item.id || "img").replace(/[^a-zA-Z0-9_-]/g, "_");
-          const tempPath = `${docDir}/_ppt_img_${safeId}.jpg`;
-          await RNFS.writeFile(tempPath, base64, "base64");
-          tempFilesToCleanup.push(tempPath);
-          item.picture = `file://${tempPath}`;
-        } catch (e) {
+      const needNormalize = validatedData.filter(
+        (i) => i?.picture && !i.picture.startsWith("file://") && (i.picture.startsWith("ph://") || i.picture.startsWith("content://"))
+      );
+      const normalizeTotal = needNormalize.length;
+      if (normalizeTotal > 0) {
+        let normalized = 0;
+        for (const item of needNormalize) {
+          const uri = item.picture;
+          if (!uri || uri.startsWith("file://")) continue;
+          if (!uri.startsWith("ph://") && !uri.startsWith("content://")) continue;
+          try {
+            const base64 = await RNFS.readFile(uri, "base64");
+            if (!base64) continue;
+            const safeId = (item.id || "img").replace(/[^a-zA-Z0-9_-]/g, "_");
+            const tempPath = `${docDir}/_ppt_img_${safeId}.jpg`;
+            await RNFS.writeFile(tempPath, base64, "base64");
+            tempFilesToCleanup.push(tempPath);
+            item.picture = `file://${tempPath}`;
+            normalized++;
+          } catch (e) {
+            console.warn('[Report] Failed to normalize image:', e?.message);
+          }
         }
+        console.log('[Report] Normalized', normalized, 'images to file://');
       }
+
       // Write template images to temp files so pptxgen uses path instead of data (reduces JS heap)
       const writeBase64ToFile = async (dataUrlOrBase64, filename) => {
         const base64 = (dataUrlOrBase64 && dataUrlOrBase64.includes(',')) ? dataUrlOrBase64.split(',')[1] : dataUrlOrBase64;
@@ -1665,24 +1812,40 @@ const PptModal = ({ projectData, project }) => {
         writeBase64ToFile(dropPointIcon, '_ppt_icon1.png'),
       ]);
       const templatePaths = { bg1: bg1 || backgroundImg, bg2: bg2 || titleBackgroundImg, bg3: bg3 || mainBackground, logo1: logo1 || titleLogo, logo2: logo2 || siteInfoLogo, icon1: icon1 || dropPointIcon };
-      // Log template file sizes for review
-      let templateTotalBytes = 0;
-      const templateNames = ['bg1', 'bg2', 'bg3', 'logo1', 'logo2', 'icon1'];
-      for (const key of templateNames) {
-        const p = templatePaths[key];
-        if (p && typeof p === 'string' && p.startsWith('file://')) {
-          try {
-            const stat = await RNFS.stat(p.replace('file://', ''));
-            const kb = (stat.size / 1024).toFixed(1);
-            templateTotalBytes += stat.size;
-            console.log('[Report] Template', key, kb, 'KB');
-          } catch (_) {}
-        }
-      }
-      if (templateTotalBytes > 0) {
-        console.log('[Report] Template images total:', (templateTotalBytes / (1024 * 1024)).toFixed(2), 'MB');
-      }
       const useData = (pathOrData) => (pathOrData && pathOrData.startsWith('file://')) ? { path: pathOrData } : { data: pathOrData };
+
+      const totalToCompress = validatedData.length;
+      // Adaptive "smart mode": large jobs use safer memory settings.
+      const isLargeReport = totalToCompress >= 70;
+      const compressionOptions = isLargeReport
+        ? { maxDimension: 1400, jpegQuality: 68, concurrency: 2, skipCompressMaxBytes: 900 * 1024 }
+        : { maxDimension: 1600, jpegQuality: 72, concurrency: 3, skipCompressMaxBytes: 700 * 1024 };
+      setLoadingMessage(`Step 1/3: Preparing ${totalToCompress} photos (usually 2–8 min; please wait)...`);
+      const { compressedMap, tempFiles: compressedTempFiles, totalOriginalBytes, totalCompressedBytes } = await compressImagesForPPT(
+        validatedData,
+        async (done, total) => {
+          setLoadingMessage(`Step 1/3: Compressing photos ${done}/${total} (do not close the app)...`);
+          await new Promise((r) => setTimeout(r, 0));
+        },
+        compressionOptions
+      );
+      tempFilesToCleanup.push(...compressedTempFiles);
+
+      // If compressed payload is too large, fail early before memory-heavy finalization.
+      const compressedMB = totalCompressedBytes / (1024 * 1024);
+      const SAFE_FINALIZE_LIMIT_MB = 260;
+      if (compressedMB > SAFE_FINALIZE_LIMIT_MB) {
+        await cleanupTempFiles();
+        Alert.alert(
+          "Report Too Large",
+          `After optimization the selected images are still about ${compressedMB.toFixed(0)} MB. This can crash on iPhone memory limits.\n\nPlease split into smaller reports (recommended 50-70 images per report).`
+        );
+        setLoadingModal(false);
+        return;
+      }
+
+      setLoadingMessage(`Step 2/3: Building slides (${totalToCompress} images)...`);
+      await new Promise((r) => setTimeout(r, 0));
 
       let ppt = new pptxgen();
 
@@ -1809,6 +1972,8 @@ const PptModal = ({ projectData, project }) => {
         return orderA - orderB;
       });
 
+      let slideImageCount = 0;
+      const totalSlideImages = validatedData.length;
       for (const [category, items] of sortedGroupedEntries) {
         const categorySlide = ppt.addSlide();
         categorySlide.background = useData(templatePaths.bg2);
@@ -2095,44 +2260,56 @@ const PptModal = ({ projectData, project }) => {
 
           if (picture) {
             try {
-              if (picture.startsWith('file://')) {
-                const filePath = picture.replace('file://', '');
+              // Use the pre-compressed image if available (much smaller, dimensions already known)
+              const itemKey =
+                item.__compressKey ||
+                (item.id != null ? `id:${String(item.id)}` : null);
+              const compressed = compressedMap.get(itemKey);
+              const slidePicture = compressed ? compressed.uri : picture;
+
+              if (slidePicture.startsWith('file://')) {
+                const filePath = slidePicture.replace('file://', '');
                 const fileExists = await RNFS.exists(filePath);
                 if (!fileExists) continue;
               }
 
-            const imageDimensions = await new Promise((resolve, reject) => {
-              let settled = false;
-              const done = (fn) => (...args) => {
-                if (settled) return;
-                settled = true;
-                clearTimeout(timer);
-                fn(...args);
-              };
-              const timer = setTimeout(() => {
-                done(() => reject(new Error('Image.getSize timeout')))();
-              }, 15000);
-              Image.getSize(
-                picture,
-                (width, height) => {
-                  if (!width || !height || width <= 0 || height <= 0) {
-                    done(() => reject(new Error(`Invalid image dimensions: ${width}x${height}`)))();
-                    return;
-                  }
-                  done(() => resolve({ width, height }))();
-                },
-                (error) => done(() => reject(error))()
-              );
-            });
+              let width, height;
+              if (compressed) {
+                width = compressed.width;
+                height = compressed.height;
+              } else {
+                const imageDimensions = await new Promise((resolve, reject) => {
+                  let settled = false;
+                  const done = (fn) => (...args) => {
+                    if (settled) return;
+                    settled = true;
+                    clearTimeout(timer);
+                    fn(...args);
+                  };
+                  const timer = setTimeout(() => {
+                    done(() => reject(new Error('Image.getSize timeout')))();
+                  }, 15000);
+                  Image.getSize(
+                    picture,
+                    (w, h) => {
+                      if (!w || !h || w <= 0 || h <= 0) {
+                        done(() => reject(new Error(`Invalid image dimensions: ${w}x${h}`)))();
+                        return;
+                      }
+                      done(() => resolve({ width: w, height: h }))();
+                    },
+                    (error) => done(() => reject(error))()
+                  );
+                });
+                width = imageDimensions.width;
+                height = imageDimensions.height;
+              }
 
-            const { width, height } = imageDimensions;
-              
               if (!width || !height || width <= 0 || height <= 0) {
                 continue;
               }
 
-            const aspectRatio = width / height;
-
+              const aspectRatio = width / height;
               if (aspectRatio === 0 || !isFinite(aspectRatio)) {
                 continue;
               }
@@ -2140,44 +2317,35 @@ const PptModal = ({ projectData, project }) => {
               const maxWidth = 6.5;
               const maxHeight = 4.5;
 
-            if (width > height) {
-              imageWidth = maxWidth;
-              imageHeight = maxWidth / aspectRatio;
-              if (imageHeight > maxHeight) {
-                imageHeight = maxHeight;
-                imageWidth = maxHeight * aspectRatio;
-              }
-            } else {
-              imageHeight = maxHeight;
-              imageWidth = maxHeight * aspectRatio;
-              if (imageWidth > maxWidth) {
+              if (width > height) {
                 imageWidth = maxWidth;
                 imageHeight = maxWidth / aspectRatio;
+                if (imageHeight > maxHeight) {
+                  imageHeight = maxHeight;
+                  imageWidth = maxHeight * aspectRatio;
+                }
+              } else {
+                imageHeight = maxHeight;
+                imageWidth = maxHeight * aspectRatio;
+                if (imageWidth > maxWidth) {
+                  imageWidth = maxWidth;
+                  imageHeight = maxWidth / aspectRatio;
+                }
               }
-            }
 
-            itemSlide.addImage({
-              path: picture,
-              x: (10 - imageWidth) / 2 + 1,
-              y: (5.63 - imageHeight) / 2,
-              w: imageWidth,
-              h: imageHeight,
-              sizing: { type: "contain" },
-            });
-
-            // Dev-only: duplicate this image on an extra slide to 2x memory use (for OOM testing with few images)
-            if (__DEV__ && global.__REPORT_STRESS_TEST__) {
-              const dupSlide = ppt.addSlide();
-              dupSlide.background = useData(templatePaths.bg2);
-              dupSlide.addImage({
-                path: picture,
+              itemSlide.addImage({
+                path: slidePicture,
                 x: (10 - imageWidth) / 2 + 1,
                 y: (5.63 - imageHeight) / 2,
                 w: imageWidth,
                 h: imageHeight,
                 sizing: { type: "contain" },
               });
-            }
+              slideImageCount++;
+              if (slideImageCount % 25 === 0 || slideImageCount === totalToCompress) {
+                setLoadingMessage(`Step 2/3: Building slides ${slideImageCount}/${totalToCompress}...`);
+                await new Promise((r) => setTimeout(r, 0));
+              }
             } catch (error) {
               continue;
             }
@@ -2223,66 +2391,75 @@ const PptModal = ({ projectData, project }) => {
       const footerSlide = ppt.addSlide();
       footerSlide.background = useData(templatePaths.bg3);
 
-      let startTime = Date.now();
+      setLoadingMessage(
+        `Step 3/3: Finalizing report (${totalToCompress} images). Large reports may take 5–25 min — keep the app open.`
+      );
+      await new Promise((r) => setTimeout(r, 0));
+
       let arrayBuffer;
       try {
+        console.log('[Report] step0 calling ppt.write(arraybuffer)');
         arrayBuffer = await ppt.write("arraybuffer");
+        console.log('[Report] step0 done ppt.write bufferLen=', arrayBuffer?.byteLength);
         if (!arrayBuffer || arrayBuffer.byteLength === 0) {
           throw new Error('Failed to generate PowerPoint: empty arraybuffer');
         }
-        const endTime = Date.now();
-        const sizeMB = (arrayBuffer.byteLength / (1024 * 1024)).toFixed(2);
-        console.log('[Report] In-memory buffer:', sizeMB, 'MB, generated in', endTime - startTime, 'ms');
-        // Clear ppt object from memory after writing to help GC
         ppt = null;
       } catch (error) {
-        // Clear ppt even on error to help GC
         ppt = null;
+        console.log('[Report] step0 ppt.write FAILED', error?.message);
         throw error;
       }
 
-      const reportName = `${project}_${new Date().getTime()}.pptx`;
+      const reportName = `${project != null && project !== '' ? project : 'Report'}_${new Date().getTime()}.pptx`;
       const filePath = `${RNFS.DocumentDirectoryPath}/${reportName}`;
 
-      let endTime;
-      startTime = Date.now();
-      
+      console.log('[Report] step1 reportName=', reportName, 'filePath=', filePath, 'project=', project, 'bufferLen=', arrayBuffer?.byteLength);
+
+      setLoadingMessage("Saving report to device (may take a few minutes for large files)...");
+      await new Promise((r) => setTimeout(r, 0));
+
       try {
-        // Save file to app's document directory
+        console.log('[Report] step2 calling writeLargePPTInChunks');
         await writeLargePPTInChunks(filePath, arrayBuffer);
-        arrayBuffer = null; // Release large buffer to help GC
-        // Verify file exists after writing
+        arrayBuffer = null;
+        console.log('[Report] step3 writeLargePPTInChunks done');
+
         const fileExists = await RNFS.exists(filePath);
+        console.log('[Report] step4 fileExists=', fileExists, 'filePath=', filePath);
         if (!fileExists) {
           throw new Error(`File was not created at ${filePath}. The write operation may have failed silently.`);
         }
-        
+
         const fileStats = await RNFS.stat(filePath);
-        const fileSizeMB = (fileStats.size / (1024 * 1024)).toFixed(2);
-        console.log('[Report] File written:', filePath, 'size', fileSizeMB, 'MB, write time', (Date.now() - startTime), 'ms');
-        // On Android, automatically attempt to save to Downloads folder
-        // This uses MediaStore API and makes the file visible in file manager
+        console.log('[Report] step5 fileStats=', fileStats ? { size: fileStats.size } : null);
+        const fileSizeMB = (fileStats && typeof fileStats.size === 'number')
+          ? (fileStats.size / (1024 * 1024)).toFixed(2)
+          : '?';
+        const savedLogMsg = `[Report] Saved: ${String(reportName)} ${String(fileSizeMB)} MB`;
+        console.log(savedLogMsg);
+
         if (Platform.OS === "android") {
           try {
             const saved = await saveToDownloads(filePath, reportName);
-            if (saved) {
-            } else {
-            }
+            console.log('[Report] step6 saveToDownloads result=', saved);
           } catch (downloadsError) {
-            // File is still accessible at filePath for upload
+            console.warn('[Report] step6 saveToDownloads error=', downloadsError?.message);
           }
         }
       } catch (error) {
+        console.log('[Report] step FAILED inside try (write/exists/stat)', error?.message, error);
         throw error;
       }
-      
-      endTime = Date.now();
 
+      console.log('[Report] step7 cleanupTempFiles');
       await cleanupTempFiles();
+      console.log('[Report] step8 setLoadingModal(false)');
       setLoadingModal(false);
-      
-      // Show success message with options (report is already on device at filePath; user can save to Downloads or upload)
+
+      console.log('[Report] step9 scheduling success Alert in 300ms, reportName=', reportName);
       setTimeout(()=>{
+        console.log('[Report] step10 showing success Alert');
         Alert.alert(
           "PowerPoint Report Generated Successfully!",
           `File saved: ${reportName}\n\nYou can save a copy to your device (Downloads) or upload to SharePoint.`,
@@ -2303,12 +2480,7 @@ const PptModal = ({ projectData, project }) => {
             {
               text: "Upload to Sharepoint",
               onPress: async () => {
-                // Read file for upload to avoid keeping arrayBuffer in memory long-term
-                const uploadStartTime = Date.now();
-                const fileData = await RNFS.readFile(filePath, 'base64');
-                const uploadBuffer = Buffer.from(fileData, 'base64').buffer;
-                await uploadReport(uploadBuffer, reportName, filePath);
-                const uploadEndTime = Date.now();
+                await uploadReport(reportName, filePath);
               },
             },
             {
@@ -2319,8 +2491,9 @@ const PptModal = ({ projectData, project }) => {
         );
       }, 300);
     } catch (error) {
+      console.log('[Report] OUTER CATCH generation failed', error?.message, error?.stack);
       const errorMessage = error?.message || String(error);
-      
+
       // Provide more helpful error messages
       let userMessage = "Error saving the PowerPoint file";
       if (errorMessage.includes("getSize")) {
@@ -2373,22 +2546,8 @@ const PptModal = ({ projectData, project }) => {
                 />
               ))}
             </ScrollView>
-            {__DEV__ && (
-              <Pressable
-                onPress={() => {
-                  const next = !stressTestReport;
-                  setStressTestReport(next);
-                  global.__REPORT_STRESS_TEST__ = next;
-                }}
-                style={{ marginVertical: 8, padding: 8, backgroundColor: stressTestReport ? '#ffcccc' : '#eee', borderRadius: 4 }}
-              >
-                <Text style={{ fontSize: 12, color: '#333' }}>
-                  {stressTestReport ? '✓ Stress test ON (2x image memory)' : 'Stress test: OFF (tap to 2x images for OOM test)'}
-                </Text>
-              </Pressable>
-            )}
             <Button title={"GENERATE"} onPress={()=>{
-              setLoadingMessage("Report is being generated and will take few minutes, please wait.")
+              setLoadingMessage("Report is being generated and will take few minutes, please wait.");
               generatePowerpoint();
             }} />
             <Pressable
