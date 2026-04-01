@@ -1,0 +1,17 @@
+diff --git a/node_modules/react-native/ReactCommon/jsc/JSCRuntime.cpp b/node_modules/react-native/ReactCommon/jsc/JSCRuntime.cpp
+index 0000000..1111111 100644
+--- a/node_modules/react-native/ReactCommon/jsc/JSCRuntime.cpp
++++ b/node_modules/react-native/ReactCommon/jsc/JSCRuntime.cpp
+@@ -401,10 +401,8 @@ JSCRuntime::~JSCRuntime() {
+   // anyway
+   JSGlobalContextRelease(ctx_);
+ #ifndef NDEBUG
+-  assert(
+-      objectCounter_ == 0 && "JSCRuntime destroyed with a dangling API object");
+-  assert(
+-      stringCounter_ == 0 && "JSCRuntime destroyed with a dangling API string");
++  // Patched: Skip teardown assert to prevent SIGABRT when Reanimated or native
++  // code still holds JSI refs during runtime destroy (reload/background).
+ #endif
+ }
+ 

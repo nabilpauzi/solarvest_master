@@ -36,7 +36,6 @@ import axios from "axios";
 import RNFS from "react-native-fs";
 import Orientation from "react-native-orientation-locker";
 import Pinchable from "react-native-pinchable";
-import { toByteArray } from "react-native-quick-base64";
 import Carousel from "react-native-reanimated-carousel";
 import {
   Camera,
@@ -48,6 +47,7 @@ import {
 import { retrieveAccessToken } from "../utils/sharePointUtils";
 import { subCategories } from "../const/data";
 import { checkFolderExist } from "../utils/sharePointUtils";
+import { uploadImageToSharePoint, getImageBatchStats } from "../utils/uploadService";
 
 import { generateUniqueId } from "../utils/commonUtils";
 
@@ -97,7 +97,6 @@ const stickers = [
 //////////////////////////////////////////////  Category Screen  ////////////////////////////////////////////////////////////
 
 export const CategoryScreen = ({ route, navigation }) => {
-  console.log("Route Params://////////////////////", route.params);
   const { category, amount, categoryId, project, cameraScreen } = route.params;
   const [description, setDescription] = useState("");
 
@@ -120,8 +119,8 @@ export const CategoryScreen = ({ route, navigation }) => {
     const options = {
       mediaType: "photo",
       includeBase64: false,
-      maxHeight: 2000,
-      maxWidth: 2000,
+      maxHeight: 1200,
+      maxWidth: 1200,
     };
 
     launchImageLibrary(options, async (response) => {
@@ -229,23 +228,18 @@ export const CategoryScreen = ({ route, navigation }) => {
     try {
       const result = await check(permission);
       if (result === RESULTS.GRANTED) {
-        console.log("Camera permission is already granted");
         return true;
       } else if (result === RESULTS.DENIED) {
         const requestResult = await request(permission);
         if (requestResult === RESULTS.GRANTED) {
-          console.log("Camera permission granted");
           return true;
         } else {
-          console.log("Camera permission denied");
           return false;
         }
       } else {
-        console.log("Camera permission is blocked or unavailable");
         return false;
       }
     } catch (error) {
-      console.warn(error);
       return false;
     }
   };
@@ -299,7 +293,6 @@ export const CategoryScreen = ({ route, navigation }) => {
   };
 
   goToCategorySection = (index) => {
-    console.log("category///////////////", category);
     navigation.push(category, {
       category: category,
       amount: 0,
@@ -323,20 +316,13 @@ export const CategoryScreen = ({ route, navigation }) => {
       parsedImageSections = parsedImageSections.filter(
         (imageSection) => imageSection.id !== pictureId
       );
-      RNFS.unlink(imgDirectory)
-        .then(() => {
-          console.log("FILE DELETED from local");
-        })
-        .catch((err) => {
-          console.log(err.message);
-        });
+      RNFS.unlink(imgDirectory).catch(() => {});
       // Update AsyncStorage with the filtered imageSections
       await AsyncStorage.setItem(
         "imageSection",
         JSON.stringify(parsedImageSections)
       );
     } catch (error) {
-      console.error("Error deleting imageSection from AsyncStorage:", error);
     }
   };
 
@@ -350,9 +336,7 @@ export const CategoryScreen = ({ route, navigation }) => {
     const options = {
       path: imageSections[index].picture.toString(),
       sticker: stickers,
-      onDone: () => {
-        console.log("Done");
-      },
+      onDone: () => {},
     };
     const result = await PhotoEditor.open(options);
     if (result) {
@@ -371,7 +355,7 @@ export const CategoryScreen = ({ route, navigation }) => {
       [
         {
           text: "Cancel",
-          onPress: () => console.log(""),
+          onPress: () => {},
           style: "cancel",
         },
         {
@@ -388,18 +372,13 @@ export const CategoryScreen = ({ route, navigation }) => {
 
             if (indexToUpdate !== -1) {
               storedData[indexToUpdate].opt = "delete";
-              console.log("storedData: " + storedData);
               try {
                 await AsyncStorage.setItem(
                   "imageCategory",
                   JSON.stringify(storedData)
                 );
                 fetchData(); // Assuming fetchData() fetches the updated data from AsyncStorage
-              } catch (error) {
-                console.log("Error updating the 'opt' key: ", error);
-              }
-            } else {
-              console.log("Item not found or already marked for deletion");
+              } catch (error) {}
             }
 
             //**********Sharepoint Delete***********
@@ -423,27 +402,10 @@ export const CategoryScreen = ({ route, navigation }) => {
                     "imageCategory",
                     JSON.stringify(storedData)
                   );
-                  RNFS.unlink(item.picture)
-                    .then(() => {
-                      console.log("FILE DELETED from local");
-                    })
-                    // `unlink` will throw an error, if the item to unlink does not exist
-                    .catch((err) => {
-                      console.log(err.message);
-                    });
-                } catch (error) {
-                  console.log(
-                    "Error updating AsyncStorage after item deletion: ",
-                    error
-                  );
-                }
-              } else {
-                console.log("Item not found or already marked for deletion");
+                  RNFS.unlink(item.picture).catch(() => {});
+                } catch (error) {}
               }
-              console.log("File Deleted: " + response);
-            } catch (error) {
-              console.log(error);
-            }
+            } catch (error) {}
           },
         },
       ],
@@ -457,9 +419,7 @@ export const CategoryScreen = ({ route, navigation }) => {
     const options = {
       path: image.uri.toString(),
       sticker: stickers,
-      onDone: () => {
-        console.log("Done");
-      },
+      onDone: () => {},
     };
     const result = await PhotoEditor.open(options);
     if (result) {
@@ -482,7 +442,6 @@ export const CategoryScreen = ({ route, navigation }) => {
             );
             fetchData();
           } catch (error) {
-            console.log("Error in storing the edited data: ", error);
           }
           
           //*********Sharepoint Upload Edited Picture ********/
@@ -496,7 +455,6 @@ export const CategoryScreen = ({ route, navigation }) => {
               originalItem.id
             );
           } catch (error) {
-            console.log("Error Uploading Edited Img Sharepoint" + error);
           }
           break;
         }
@@ -568,8 +526,6 @@ export const CategoryScreen = ({ route, navigation }) => {
         ? JSON.parse(sharepointDataJSON)
         : [];
     } catch (error) {
-      // console.log(error.response.data);
-      console.log("Error in fetching data: " + error);
     }
   };
 
@@ -580,66 +536,22 @@ export const CategoryScreen = ({ route, navigation }) => {
     }, [])
   );
 
-  const loadImageBase64 = async (capturedImageURI) => {
-    try {
-      const base64Data = await RNFS.readFile(capturedImageURI, "base64");
-      return base64Data;
-    } catch (error) {
-      console.error("Error converting image to base64:", error);
-    }
-  };
-
   const uploadImageSharepoint = async (imgUri, imgName, folderUri, imgId) => {
-    // const imgName = "testPicture.jpg";
-    // const base64Image = await loadImageBase64(imageSections[0].picture);
-    // const fileUploadUrl = `https://solarvest.sharepoint.com/sites/ProjectDevelopment/_api/web/GetFolderByServerRelativeUrl(\'/sites/ProjectDevelopment/Shared Documents/Images\')/Files/add(url=\'${imgName}\',overwrite=true)`;
-    const fileUploadUrl = `https://solarvest.sharepoint.com/sites/ProjectDevelopment/_api/web/GetFolderByServerRelativeUrl(\'/sites/ProjectDevelopment/ListofImage/${folderUri}\')/Files/add(url=\'${imgName}\',overwrite=true)`;
-    const base64Image = await loadImageBase64(imgUri);
-    const [accessToken, formDigest] = await retrieveAccessToken();
-    const headers = {
-      Authorization: `Bearer ${accessToken}`,
-      "X-RequestDigest": formDigest,
-      Accept: "application/json; odata=verbose",
-      "Content-Type": "image/jpg",
-    };
-
-    const arrayBuffer = toByteArray(base64Image);
-    try {
-      const response = await axios({
-        method: "POST",
-        url: fileUploadUrl,
-        data: arrayBuffer,
-        headers: headers,
-      });
-      if (response.data.d.Exists) {
-        try {
-          const storedDataJSON = await AsyncStorage.getItem("imageCategory");
-          const storedData = JSON.parse(storedDataJSON);
-          const indexToUpdate = storedData.findIndex(
-            (item) => item.id === imgId && item.opt === "create"
-          );
-
-          if (indexToUpdate !== -1) {
-            storedData[indexToUpdate].opt = "";
-            try {
-              await AsyncStorage.setItem(
-                "imageCategory",
-                JSON.stringify(storedData)
-              );
-            } catch (error) {
-              // Silent fail
-            }
-          }
-        } catch (error) {
-          console.log("error in updating the operation of he object");
+    const success = await uploadImageToSharePoint(imgUri, imgName, folderUri, imgId);
+    if (success) {
+      try {
+        const storedDataJSON = await AsyncStorage.getItem("imageCategory");
+        const storedData = storedDataJSON ? JSON.parse(storedDataJSON) : [];
+        const indexToUpdate = storedData.findIndex(
+          (item) => item.id === imgId && item.opt === "create"
+        );
+        if (indexToUpdate !== -1) {
+          storedData[indexToUpdate].opt = "";
+          await AsyncStorage.setItem("imageCategory", JSON.stringify(storedData));
         }
-        console.log("Image Uploaded to Sharepoint: " + imgName);
-        return true;
-      }
-      console.log(response.data.d.Exists);
-    } catch (error) {
-      console.log(error.response.data);
+      } catch (error) {}
     }
+    return success;
   };
 
   const [check1, setCheck1] = useState(false);
@@ -656,7 +568,6 @@ export const CategoryScreen = ({ route, navigation }) => {
     }
 
     if (!project) {
-      console.error("Project is undefined");
       Alert.alert("Error", "Project is not defined");
       return;
     }
@@ -684,55 +595,29 @@ export const CategoryScreen = ({ route, navigation }) => {
       const storedDataJSON = await AsyncStorage.getItem("imageCategory");
       const storedData = storedDataJSON ? JSON.parse(storedDataJSON) : [];
 
-      const photoCount = updatedImageSections.length;
-      console.log(`📸 Saving ${photoCount} photo(s) to local storage`);
-      
       storedData.push(...updatedImageSections);
       await AsyncStorage.setItem("imageCategory", JSON.stringify(storedData));
-      
-      const totalPhotos = storedData.length;
-      console.log(`✅ Total photos in storage: ${totalPhotos}`);
-      
       await AsyncStorage.removeItem("imageSection");
       navigation.goBack();
 
-      console.log("project check 1$$$$$$$$$$$$$$$$$$$$$$$", project);
-
-      // ***********sharepoint upload***********
       const folderUri = `${project}/${category}/${categoryId}`;
-
-      console.log("project check 2$$$$$$$$$$$$$$$$$$$$$$$", folderUri);
       const folderExist = await checkFolderExist(folderUri, project);
-      console.log("project check 3$$$$$$$$$$$$$$$$$$$$$$$", project);
 
       if (folderExist) {
-        const totalToUpload = updatedImageSections.length;
-        console.log(`📤 Uploading ${totalToUpload} photo(s) to SharePoint`);
-        
-        let uploadedCount = 0;
-        updatedImageSections.forEach(async (item, idx) => {
+        for (let idx = 0; idx < updatedImageSections.length; idx++) {
+          const item = updatedImageSections[idx];
           try {
             const imgName = `${item.id}_${item.project}_${item.category}_${item.categoryId}_${item.description}.jpg`;
-            const success = await uploadImageSharepoint(
+            await uploadImageSharepoint(
               item.picture,
               imgName,
               folderUri,
               item.id
             );
-            
-            if (success) {
-              uploadedCount++;
-              console.log(`✅ Uploaded ${uploadedCount}/${totalToUpload} photos`);
-            }
-          } catch (error) {
-            console.error("Error sending data to SharePoint:", error);
-          }
-        });
+          } catch (error) {}
+        }
       }
-    } catch (error) {
-      console.error("❌ Error in uploadPicture:", error.message);
-      console.error("📌 Stack trace:\n", error.stack);
-    }
+    } catch (error) {}
   };
 
   const [expandedSections, setExpandedSections] = useState({});
@@ -753,7 +638,6 @@ export const CategoryScreen = ({ route, navigation }) => {
 
       setCategoryData(formatData(storedData, category));
     } catch (error) {
-      console.error("Error swapping picture items:", error);
     }
   };
 
@@ -844,6 +728,7 @@ export const CategoryScreen = ({ route, navigation }) => {
                             : require("../assets/images.png")
                         }
                         style={styles.imageItem}
+                        resizeMethod="resize"
                       />
                     </Pinchable>
                     <Text style={styles.name}>
@@ -912,13 +797,7 @@ export const CategoryScreen = ({ route, navigation }) => {
         "imageSection",
         JSON.stringify(updatedSections)
       );
-      console.log("Image sections updated and saved to AsyncStorage");
-    } catch (error) {
-      console.error(
-        "Error saving updated image sections to AsyncStorage:",
-        error
-      );
-    }
+    } catch (error) {}
   };
 
   /* // Update description in state when component props change
@@ -1001,6 +880,10 @@ export const CategoryScreen = ({ route, navigation }) => {
         data={imageSections}
         keyExtractor={(item, index) => index.toString()}
         contentContainerStyle={styles.imageSectionContainer}
+        windowSize={5}
+        maxToRenderPerBatch={5}
+        initialNumToRender={3}
+        removeClippedSubviews={true}
         renderItem={({ item: section, index }) => (
           <View style={styles.uploadPictureContainer}>
             {/* <View style={{alignItems: 'center'}}>
@@ -1065,8 +948,9 @@ export const CategoryScreen = ({ route, navigation }) => {
               {section.picture ? (
                 <Image
                   source={{ uri: section.picture }}
-                  style={{ flex: 1 }}
+                  style={styles.listThumbnailImage}
                   resizeMode="contain"
+                  resizeMethod="resize"
                 />
               ) : (
                 <TouchableOpacity
@@ -1252,7 +1136,6 @@ export const CameraScreen = ({ route, navigation }) => {
       if (!hasPermission) {
         const permissionGranted = await requestPermission();
         if (!permissionGranted) {
-          console.log("Camera permission denied");
           return;
         }
       }
@@ -1306,7 +1189,6 @@ export const CameraScreen = ({ route, navigation }) => {
 
   // Error handling callback
   const onError = useCallback((error) => {
-    console.error("Camera Error:", error);
   }, []);
 
   // Focus handler
@@ -1317,7 +1199,6 @@ export const CameraScreen = ({ route, navigation }) => {
         await camera.current.focus({ x: x, y: y });
       }
     } catch (e) {
-      console.warn('Focus failed:', e);
     }
   }, []);
 
@@ -1698,7 +1579,6 @@ export const CameraScreen = ({ route, navigation }) => {
   const takePhoto = async () => {
     try {
       if (!camera.current) {
-        console.error("Camera is not initialized");
         return;
       }
 
@@ -1750,14 +1630,12 @@ export const CameraScreen = ({ route, navigation }) => {
             "imageSection",
             JSON.stringify(updatedImageSections)
           ).catch((error) => {
-            console.error("Error setting imageSection in AsyncStorage:", error);
           });
 
           return updatedImageSections;
         });
       });
     } catch (error) {
-      console.error("Error capturing photo:", error);
     }
   };
 
@@ -2040,7 +1918,12 @@ export const CameraScreen = ({ route, navigation }) => {
               const capturedImages = imageSections.filter((item) => item.picture !== "");
               const imageView = (uri) => (
                 <View style={{ flex: 1, borderWidth: 1, justifyContent: "center" }}>
-                  <Image source={{ uri }} style={{ flex: 1 }} resizeMode="contain" />
+                  <Image
+                    source={{ uri }}
+                    style={{ flex: 1 }}
+                    resizeMode="contain"
+                    resizeMethod="resize"
+                  />
                 </View>
               );
 
@@ -2056,7 +1939,7 @@ export const CameraScreen = ({ route, navigation }) => {
                   data={capturedImages}
                   inactiveSlideScale={1}
                   scrollAnimationDuration={1000}
-                  onSnapToItem={(index) => console.log("current index:", index)}
+                  onSnapToItem={() => {}}
                   renderItem={({ item }) => imageView(item.picture)}
                 />
               ) : null;
@@ -2070,13 +1953,14 @@ export const CameraScreen = ({ route, navigation }) => {
                         autoPlay={true}
                         data={imageSections}
                         scrollAnimationDuration={1000}
-                        onSnapToItem={(index) => console.log('current index:', index)}
+                        onSnapToItem={() => {}}
                         renderItem={({ item }) => (
                             <View style={{ flex: 1, borderWidth: 1, justifyContent: 'center' }}>
                                 <Image
                                     source={{ uri: item.picture }}
                                     style={{ flex: 1 }}
                                     resizeMode="contain"
+                                    resizeMethod="resize"
                                 />
                             </View>
                         )}
@@ -2203,6 +2087,10 @@ const styles = StyleSheet.create({
   imageContainer: {
     height: 300,
     width: "auto",
+  },
+  listThumbnailImage: {
+    width: width - 80,
+    height: 300,
   },
   category_background: {
     backgroundColor: "red",

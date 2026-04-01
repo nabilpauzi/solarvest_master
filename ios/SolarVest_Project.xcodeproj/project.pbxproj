@@ -162,7 +162,6 @@
 				00E356EA1AD99517003FC87E /* Sources */,
 				00E356EB1AD99517003FC87E /* Frameworks */,
 				00E356EC1AD99517003FC87E /* Resources */,
-				5EC8CAFDF5F8CDA3EB0068E2 /* [CP] Embed Pods Frameworks */,
 				657D98EC44DA6ECF00BA6224 /* [CP] Copy Pods Resources */,
 			);
 			buildRules = (
@@ -185,7 +184,6 @@
 				13B07F8C1A680F5B00A75B9A /* Frameworks */,
 				13B07F8E1A680F5B00A75B9A /* Resources */,
 				00DD1BFF1BD5951E006B06BC /* Bundle React Native code and images */,
-				B941642016C657502F129662 /* [CP] Embed Pods Frameworks */,
 				0B9F2EDBCF1D13BE540E1A63 /* [CP] Copy Pods Resources */,
 			);
 			buildRules = (
@@ -301,30 +299,17 @@
 			inputFileListPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-SolarVest_Project/Pods-SolarVest_Project-resources-${CONFIGURATION}-input-files.xcfilelist",
 			);
+			inputPaths = (
+			);
 			name = "[CP] Copy Pods Resources";
 			outputFileListPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-SolarVest_Project/Pods-SolarVest_Project-resources-${CONFIGURATION}-output-files.xcfilelist",
 			);
+			outputPaths = (
+			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-SolarVest_Project/Pods-SolarVest_Project-resources.sh\"\n";
-			showEnvVarsInLog = 0;
-		};
-		5EC8CAFDF5F8CDA3EB0068E2 /* [CP] Embed Pods Frameworks */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-SolarVest_Project-SolarVest_ProjectTests/Pods-SolarVest_Project-SolarVest_ProjectTests-frameworks-${CONFIGURATION}-input-files.xcfilelist",
-			);
-			name = "[CP] Embed Pods Frameworks";
-			outputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-SolarVest_Project-SolarVest_ProjectTests/Pods-SolarVest_Project-SolarVest_ProjectTests-frameworks-${CONFIGURATION}-output-files.xcfilelist",
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-SolarVest_Project-SolarVest_ProjectTests/Pods-SolarVest_Project-SolarVest_ProjectTests-frameworks.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
 		657D98EC44DA6ECF00BA6224 /* [CP] Copy Pods Resources */ = {
@@ -335,9 +320,13 @@
 			inputFileListPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-SolarVest_Project-SolarVest_ProjectTests/Pods-SolarVest_Project-SolarVest_ProjectTests-resources-${CONFIGURATION}-input-files.xcfilelist",
 			);
+			inputPaths = (
+			);
 			name = "[CP] Copy Pods Resources";
 			outputFileListPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-SolarVest_Project-SolarVest_ProjectTests/Pods-SolarVest_Project-SolarVest_ProjectTests-resources-${CONFIGURATION}-output-files.xcfilelist",
+			);
+			outputPaths = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
@@ -364,23 +353,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
-			showEnvVarsInLog = 0;
-		};
-		B941642016C657502F129662 /* [CP] Embed Pods Frameworks */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-SolarVest_Project/Pods-SolarVest_Project-frameworks-${CONFIGURATION}-input-files.xcfilelist",
-			);
-			name = "[CP] Embed Pods Frameworks";
-			outputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-SolarVest_Project/Pods-SolarVest_Project-frameworks-${CONFIGURATION}-output-files.xcfilelist",
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-SolarVest_Project/Pods-SolarVest_Project-frameworks.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
 		FD10A7F022414F080027D42C /* Start Packager */ = {
@@ -498,7 +470,7 @@
 				DEVELOPMENT_TEAM = 729BM8B56C;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = SolarVest_Project/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = SolarVest_Project;
+				INFOPLIST_KEY_CFBundleDisplayName = "Solarvest Survey";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -509,15 +481,14 @@
 					"\"$(SDKROOT)/usr/lib/swift\"",
 					"\"$(TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME)\"",
 				);
-				MARKETING_VERSION = 2.5.3;
+				MARKETING_VERSION = 2.6.1;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
 					"-lc++",
 					"-Wl,-undefined,dynamic_lookup",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = "org.reactjs.native.example.$(PRODUCT_NAME:rfc1034identifier)";
-				"PRODUCT_BUNDLE_IDENTIFIER[sdk=iphoneos*]" = "org.reactjs.native.example.SolarVest-Project";
+				PRODUCT_BUNDLE_IDENTIFIER = "org.reactjs.native.example.SolarVest-Project";
 				PRODUCT_NAME = SolarVest_Project;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -537,7 +508,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 729BM8B56C;
 				INFOPLIST_FILE = SolarVest_Project/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = SolarVest_Project;
+				INFOPLIST_KEY_CFBundleDisplayName = "Solarvest Survey";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -548,15 +519,14 @@
 					"\"$(SDKROOT)/usr/lib/swift\"",
 					"\"$(TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME)\"",
 				);
-				MARKETING_VERSION = 2.5.3;
+				MARKETING_VERSION = 2.6.1;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
 					"-lc++",
 					"-Wl,-undefined,dynamic_lookup",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = "org.reactjs.native.example.$(PRODUCT_NAME:rfc1034identifier)";
-				"PRODUCT_BUNDLE_IDENTIFIER[sdk=iphoneos*]" = "org.reactjs.native.example.SolarVest-Project";
+				PRODUCT_BUNDLE_IDENTIFIER = "org.reactjs.native.example.SolarVest-Project";
 				PRODUCT_NAME = SolarVest_Project;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_VERSION = 5.0;
@@ -638,14 +608,11 @@
 					"-DFOLLY_MOBILE=1",
 					"-DFOLLY_USE_LIBCPP=1",
 				);
-				OTHER_LDFLAGS = (
-					"$(inherited)",
-					" ",
-				);
+				OTHER_LDFLAGS = "$(inherited)  ";
 				REACT_NATIVE_PATH = "${PODS_ROOT}/../../node_modules/react-native";
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG";
-				USE_HERMES = true;
+				USE_HERMES = false;
 			};
 			name = Debug;
 		};
@@ -718,13 +685,10 @@
 					"-DFOLLY_MOBILE=1",
 					"-DFOLLY_USE_LIBCPP=1",
 				);
-				OTHER_LDFLAGS = (
-					"$(inherited)",
-					" ",
-				);
+				OTHER_LDFLAGS = "$(inherited)  ";
 				REACT_NATIVE_PATH = "${PODS_ROOT}/../../node_modules/react-native";
 				SDKROOT = iphoneos;
-				USE_HERMES = true;
+				USE_HERMES = false;
 				VALIDATE_PRODUCT = YES;
 			};
 			name = Release;

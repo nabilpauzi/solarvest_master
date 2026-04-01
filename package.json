@@ -9,7 +9,7 @@
     "start": "react-native start",
     "test": "jest",
     "prettier": "prettier --write .",
-    "postinstall": "patch-package"
+    "postinstall": "patch-package && (patch -p1 -s < scripts/vision-camera-ios13.patch || true)"
   },
   "dependencies": {
     "@babel/runtime": "^7.20.0",
